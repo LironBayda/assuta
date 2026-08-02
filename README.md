@@ -80,23 +80,14 @@ search and multi-seed confirmation behind each):
 |---|---|---|---|
 | PINN `f_x` | `omega_0` | 1.0 | collapses above ~10; loss diverges by 30-50 |
 | PINN `f_x` | `hidden_size` | 40 | no bottleneck; bottleneck didn't help at any width tried |
-| PINN training | schedule | pure Adam, full epoch count | a two-phase Adam+L-BFGS schedule was tested and REMOVED -- Adam-only matched or beat it every time |
+| PINN training | schedule | pure Adam, full epoch count 
 | PINN | `causality_eps_final` | 2000 | the single clearest win found this session -- also flips k2's correlation sign, not just magnitude |
 | PINN loss weights | `physics_weight`, `tac_consistency_weight`, `reg_weight` | 0.01, None(→0.01), 1e-4 | unchanged — a single-seed win for `physics_weight=0.02` did NOT hold up across seeds |
 | `MVE` encoder | `omega_0` | 10.0 | different regime from the PINN's `f_x` — don't conflate the two |
 | `digit_scale_normalize` | `offset` | 3 | divide TAC by `10^(digits+offset)`; per-curve min-max erases K1's amplitude signal, this doesn't |
 | `Trainer` | `grad_clip` | 1.0 | **critical**: `grad_clip=0.0` silently zeros every gradient (found this session) |
 
-## Known issues fixed / flagged this session (see
-`simulation_validation_report.md` for the full write-up with numbers)
-
-- **Fixed**: `Ks_net.Ks_raw` was never registered as an `nn.Parameter` — the PINN crashed on its first forward pass.
-- **Fixed**: `Trainer`'s old `grad_clip=0.0` default silently zeroed all gradients.
-- **Fixed**: `pet/analysis.py` was passing frame *durations* as timestamps (now `np.cumsum`'d, matching `dce/analysis.py`).
-- **Removed**: the two-phase Adam+L-BFGS training schedule -- pure Adam matched or beat it in every hyperparameter sweep comparison.
-- **Removed**: the VAE model family (SineBetaVAE, DynamicBetaVAE) and the PCA baseline -- both underperformed MVE and voxelwise/PINN throughout validation.
-- **Flagged, not fixed**: the 1TCM `Ks_net`'s second parameter is used inconsistently as `ve` in one function and `kep` directly in another — affects the DCE PINN's "k2" output specifically. 2TCM does not have this issue.
-- **Flagged**: `Trainer.train()`'s `z_slices` loop doesn't actually slice per z — every iteration retrains on the whole passed-in volume.
+## Known issues fixed / flagged this session (see `simulation_validation_report.md` for the full write-up with numbers)
 
 ## B-PINN uncertainty
 
