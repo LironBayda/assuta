@@ -2,15 +2,7 @@
 
 Estimates DCE-MRI (1-tissue compartment) and dynamic PET (irreversible
 2-tissue compartment) kinetic parameters (K1, k2, k3) via PINN, classical
-voxelwise NLLS fitting, and MVE (a supervised, calibrated-uncertainty
-network), validated against a literature-grounded simulation.
-
-(This repo used to also include a VAE model family (SineBetaVAE,
-DynamicBetaVAE) and a PCA baseline, both used for unsupervised
-latent-space kinetic-parameter recovery. Both were removed -- they
-underperformed MVE and voxelwise/PINN throughout this project's
-validation; see simulation_validation_report.md for the numbers that
-motivated keeping MVE and dropping the rest.)
+voxelwise NLLS fitting, and , validated against a literature-grounded simulation.
 
 ## Install
 
@@ -53,9 +45,6 @@ core/           PINN (f_x / f_x_bpinn, Ks_net, PINNLoss, Trainer,
                  uncertainty.py for the B-PINN deep-ensemble uncertainty)
 dce/            DCE-MRI pipeline (preprocessing, analysis: pinn/voxelwise)
 pet/            PET pipeline (preprocessing, analysis: pinn/voxelwise)
-VAE_initi/      Shared Sine/SIREN infra (model.py) + TAC simulation
-                 (dataset.py) + MVE (mve.py) -- name kept for history,
-                 no longer holds VAE models (see note above)
 simulation/     Everything for validating the above against known ground truth
                 (code only -- see simulation_data/ for its outputs):
   phantom.py               prostate-shaped ellipsoid + random cancer lesion
