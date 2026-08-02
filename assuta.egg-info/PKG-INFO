@@ -1,0 +1,10 @@
+Metadata-Version: 2.1
+Name: assuta
+Version: 0.1.0
+Summary: DCE-MRI / dynamic PET kinetic parameter estimation: PINN, voxelwise, validated against literature-grounded simulation
+Requires-Python: >=3.8
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: torch
+Requires-Dist: nibabel
+Requires-Dist: SimpleITK

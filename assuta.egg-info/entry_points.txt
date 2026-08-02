@@ -1,0 +1,2 @@
+[console_scripts]
+assuta = assuta_cli:main
