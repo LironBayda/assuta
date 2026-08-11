@@ -37,9 +37,7 @@ def feng_input_function(t_min, A1=851.1, A2=21.9, A3=20.8,
                          lam1=-4.134, lam2=-0.1191, lam3=-0.0104, t0=0.5):
     """
     Simplified three-exponential (Feng-type) population arterial input
-    function for PET, t in minutes. Same functional form already used in
-    VAE_initi/dataset.py, reproduced here so this module has no import-
-    time dependency on the VAE package.
+    function for PET, t in minutes.
     """
     t = np.asarray(t_min, dtype=np.float64)
     tt = t - t0

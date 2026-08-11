@@ -21,6 +21,14 @@ relevant modality subfolder is skipped, not an error):
     python assuta_cli.py --source real --batch-root /data --modality pet --method voxelwise
     python assuta_cli.py --source real --batch-root /data --modality both --method pinn
 
+Windowed PINN training (default for --method pinn -- independent
+per-window fits; pass --no-windowed for the older whole-image behavior):
+    python assuta_cli.py --source simulation --modality dce --method pinn
+    python assuta_cli.py --source simulation --modality dce --method pinn --no-windowed
+
+True 3D box windowing (--axis xyz, requires --window-size as X Y Z):
+    python assuta_cli.py --source simulation --modality dce --method pinn --axis xyz --window-size 16 16 8
+
 Install as a console command via `pip install -e .` (see pyproject.toml),
 then just run `assuta ...` instead of `python assuta_cli.py ...`.
 """
@@ -94,31 +102,19 @@ def run_simulation(args):
 
     elif args.method == "pinn":
         from core.train import Trainer
-        affine = np.eye(4)
         trainer = Trainer(c_p=aif, num_of_compartment=num_of_compartment, t=t,
-                           device=args.device, affine=affine, save_path=out_dir, epochs=args.epochs)
+                           device=args.device, affine=np.eye(4), save_path=out_dir, epochs=args.epochs,
+                           windowed=args.windowed, axis=args.axis, slice_window=args.slice_window,
+                           window_size=args.window_size, stride=args.stride)
         ks_out, hist = trainer.train(img, z_slices=[0])
+
         for i, name in enumerate(param_names):
             r = pearsonr(ks_out[i][tissue], gt[name][tissue])[0]
             print(f"  {name}: corr={r:.3f}")
-        print(f"  final loss: {hist['loss'][-1]:.3f}")
-
-    elif args.method == "bayesian":
-        from core.uncertainty import estimate_with_uncertainty
-        result = estimate_with_uncertainty(
-            img, aif, t, num_of_compartment=num_of_compartment,
-            save_path=out_dir, affine=np.eye(4), device=args.device,
-            n_ensemble=args.n_ensemble, epochs=args.epochs, dropout_p=args.dropout_p,
-            tissue_mask=tissue,
-        )
-        for i, name in enumerate(param_names):
-            r = pearsonr(result["K_mean"][i][tissue], gt[name][tissue])[0]
-            unc_mean = result["K_uncertainty_demeaned"][i][tissue].mean()
-            print(f"  {name}: corr={r:.3f}  mean per-voxel uncertainty={unc_mean:.4g}")
 
     else:
         raise ValueError(f"--method {args.method!r} not supported for --source simulation "
-                          f"(use 'voxelwise', 'pinn', or 'bayesian')")
+                          f"(use 'voxelwise' or 'pinn')")
 
     print(f"[simulation] outputs in {out_dir}")
 
@@ -137,7 +133,8 @@ def run_real_data(args):
         from pet.analysis import pipeline
 
     result = pipeline(args.path, method=args.method, epochs=args.epochs, device=args.device,
-                       n_ensemble=args.n_ensemble, dropout_p=args.dropout_p)
+                       windowed=args.windowed, axis=args.axis, slice_window=args.slice_window,
+                       window_size=args.window_size, stride=args.stride)
     print(f"[{args.modality}] pipeline done, method={args.method}, device={args.device}")
     return result
 
@@ -154,49 +151,80 @@ def run_batch(args):
         from dce.analysis import run_all_dce
         print(f"[batch] processing root/sub*/dce under {args.batch_root}")
         run_all_dce(args.batch_root, epochs=args.epochs, device=args.device, method=args.method,
-                    n_ensemble=args.n_ensemble, dropout_p=args.dropout_p)
+                    windowed=args.windowed, axis=args.axis, slice_window=args.slice_window,
+                    window_size=args.window_size, stride=args.stride)
 
     if args.modality in ("pet", "both"):
         from pet.analysis import run_all_pet
         print(f"[batch] processing root/sub*/pet under {args.batch_root}")
         run_all_pet(args.batch_root, epochs=args.epochs, device=args.device, method=args.method,
-                    n_ensemble=args.n_ensemble, dropout_p=args.dropout_p)
+                    windowed=args.windowed, axis=args.axis, slice_window=args.slice_window,
+                    window_size=args.window_size, stride=args.stride)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--source", choices=["simulation", "real"], required=True,
-                         help="'simulation': run on a built-in phantom (no real data needed). "
-                              "'real': run on real data (single subject via --path, or a whole "
-                              "folder of subjects via --batch-root). Which modality (DCE vs PET) "
-                              "is chosen separately via --modality in both cases.")
-    parser.add_argument("--modality", choices=["dce", "pet", "both"], default="dce",
-                         help="Which kinetic model family to use (1TCM/DCE-style vs 2TCM/PET-style). "
-                              "'both' is only valid with --source real --batch-root.")
-    parser.add_argument("--method", choices=["pinn", "voxelwise", "bayesian"], default="pinn",
-                         help="'bayesian' additionally computes a per-voxel uncertainty map "
-                              "(Sine B-PINN deep ensemble) -- see --n-ensemble/--dropout-p.")
-    parser.add_argument("--path", default=None,
-                         help="Real subject directory, single subject (e.g. /data/sub01/dce). "
-                              "Mutually exclusive with --batch-root. (--source real only)")
-    parser.add_argument("--batch-root", default=None,
-                         help="Root directory containing sub*/dce and/or sub*/pet subfolders -- "
-                              "processes every subject found, skipping any missing the relevant "
-                              "modality. Mutually exclusive with --path. (--source real only)")
-    parser.add_argument("--device", default="cpu", choices=["cpu", "cuda"],
-                         help="Used consistently across simulation, single-subject, and batch modes "
-                              "(default cpu).")
-    parser.add_argument("--epochs", type=int, default=300)
-    parser.add_argument("--n-ensemble", type=int, default=5,
-                         help="(--method bayesian only) number of B-PINN ensemble members. "
-                              "Runtime scales ~linearly with this.")
-    parser.add_argument("--dropout-p", type=float, default=0.1,
-                         help="(--method bayesian only) MC-dropout probability in the B-PINN.")
-    parser.add_argument("--seed", type=int, default=0, help="(--source simulation only)")
-    parser.add_argument("--shape", type=int, nargs=3, default=[32, 32, 8],
-                         help="(--source simulation only) phantom shape, e.g. --shape 64 64 20")
-    parser.add_argument("--noise-std", type=float, default=0.03, help="(--source simulation only)")
+
+    essential = parser.add_argument_group(
+        "essential (this is really all most runs need)")
+    essential.add_argument("--source", choices=["simulation", "real"], required=True,
+                            help="'simulation': run on a built-in phantom (no real data needed). "
+                                 "'real': run on real data (single subject via --path, or a whole "
+                                 "folder of subjects via --batch-root). Which modality (DCE vs PET) "
+                                 "is chosen separately via --modality in both cases.")
+    essential.add_argument("--modality", choices=["dce", "pet", "both"], default="dce",
+                            help="Which kinetic model family to use (1TCM/DCE-style vs 2TCM/PET-style). "
+                                 "'both' is only valid with --source real --batch-root.")
+    essential.add_argument("--method", choices=["pinn", "voxelwise"], default="pinn")
+    essential.add_argument("--device", default="cpu", choices=["cpu", "cuda"])
+    essential.add_argument("--epochs", type=int, default=1000)
+
+    real_data = parser.add_argument_group("real data (--source real)")
+    real_data.add_argument("--path", default=None,
+                            help="Real subject directory, single subject (e.g. /data/sub01/dce). "
+                                 "Mutually exclusive with --batch-root.")
+    real_data.add_argument("--batch-root", default=None,
+                            help="Root directory containing sub*/dce and/or sub*/pet subfolders -- "
+                                 "processes every subject found, skipping any missing the relevant "
+                                 "modality. Mutually exclusive with --path.")
+
+    windowing = parser.add_argument_group(
+        "windowed PINN training (advanced -- defaults are already sensible, "
+        "only touch these if you know you need to)")
+    windowing.add_argument("--windowed", action="store_true", default=True,
+                            help="(--method pinn only, default True) train independent per-window "
+                                 "PINNs instead of one whole-image fit. Pass --no-windowed for the "
+                                 "older whole-image behavior.")
+    windowing.add_argument("--no-windowed", dest="windowed", action="store_false")
+
+    windowing.add_argument("--axis", choices=["xy", "z", "xyz"], default="xy",
+                            help="'xy' (default): small in-plane patches, Z kept whole. 'z': "
+                                 "slice-wise, full X,Y per window, split along Z instead. 'xyz': "
+                                 "a genuine 3D box window, splitting all three spatial dimensions "
+                                 "(requires --window-size as 3 values).")
+    windowing.add_argument("--slice-window", type=int, default=1,
+                            help="(--axis z only) Z-slices per window.")
+    windowing.add_argument("--window-size", type=int, nargs="+", default=[16],
+                            help="spatial window size: one value for a cube/square (--axis xy), "
+                                 "two values X Y (--axis xy), or three values X Y Z (--axis xyz, "
+                                 "required).")
+    windowing.add_argument("--stride", type=int, nargs="+", default=None,
+                            help="window stride (--axis xy/xyz only); same value-count rules as "
+                                 "--window-size. Defaults to non-overlapping windows (stride=window-size).")
+
+    sim_only = parser.add_argument_group("simulation only (--source simulation)")
+    sim_only.add_argument("--seed", type=int, default=0)
+    sim_only.add_argument("--shape", type=int, nargs=3, default=[32, 32, 8],
+                           help="phantom shape, e.g. --shape 64 64 20")
+    sim_only.add_argument("--noise-std", type=float, default=0.03)
     args = parser.parse_args()
+
+    # --window-size / --stride come in as lists of ints (nargs="+");
+    # Trainer expects a bare int for a square/cube, or a tuple for an
+    # explicit (X,Y) / (X,Y,Z) size -- axis="xyz" requires the 3-tuple form.
+    args.window_size = args.window_size[0] if len(args.window_size) == 1 else tuple(args.window_size)
+    if args.stride is not None:
+        args.stride = args.stride[0] if len(args.stride) == 1 else tuple(args.stride)
 
     if args.source == "simulation":
         if args.path is not None or args.batch_root is not None:

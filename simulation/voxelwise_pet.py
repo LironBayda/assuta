@@ -25,7 +25,18 @@ def fit_1tcm_voxel(tac, t, aif_interp, p0=(0.2, 0.3), bounds=((1e-6, 3.0), (1e-6
     reproduced here (rather than imported) so this module has no
     dependency on the dce package, and with PET-appropriate default
     bounds (PET K1/k2 commonly exceed the DCE fitter's default 1.0 cap,
-    e.g. the literature K1/k2 ranges used in kinetics_literature.py)."""
+    e.g. the literature K1/k2 ranges used in kinetics_literature.py).
+
+    Uses scipy.optimize.minimize with `bounds` given and no `method`
+    specified -- resolves to L-BFGS-B, NOT Powell. This was originally
+    Powell explicitly; changed after the same empirical finding as
+    dce.analysis.fit_1tcm_ode_voxel's docstring describes in detail:
+    Powell produced catastrophic blowups (observed up to 884,565x) on
+    low-signal noisy voxels across repeated-noise-draw testing, while
+    L-BFGS-B (and a global bounded optimizer, dual_annealing, at ~10x
+    the runtime for no accuracy gain) did not. Do not switch this back
+    to Powell.
+    """
     if tac.max() < 1e-6:
         return np.nan, np.nan
 
@@ -35,7 +46,7 @@ def fit_1tcm_voxel(tac, t, aif_interp, p0=(0.2, 0.3), bounds=((1e-6, 3.0), (1e-6
         return np.sum((model - tac) ** 2)
 
     try:
-        result = minimize(objective, x0=p0, bounds=bounds, method="Powell")
+        result = minimize(objective, x0=p0, bounds=bounds)
         return tuple(result.x)
     except Exception:
         return np.nan, np.nan
@@ -98,6 +109,9 @@ def two_tcm_solution(t, K1, k2, k3, aif_interp):
 
 def fit_2tcm_voxel(tac, t, aif_interp, p0=(0.2, 0.3, 0.05),
                     bounds=((1e-6, 2.0), (1e-6, 2.0), (1e-6, 2.0))):
+    """See fit_1tcm_voxel's docstring re: method=Powell removed (kept
+    scipy's own default, L-BFGS-B, for the same empirically-validated
+    reason -- Powell's low-signal-voxel blowup risk)."""
     if tac.max() < 1e-6:
         return np.nan, np.nan, np.nan
 
@@ -107,7 +121,7 @@ def fit_2tcm_voxel(tac, t, aif_interp, p0=(0.2, 0.3, 0.05),
         return np.sum((model - tac) ** 2)
 
     try:
-        result = minimize(objective, x0=p0, bounds=bounds, method="Powell")
+        result = minimize(objective, x0=p0, bounds=bounds)
         return tuple(result.x)
     except Exception:
         return np.nan, np.nan, np.nan

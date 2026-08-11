@@ -17,9 +17,6 @@ per-voxel scipy optimization; the PINN's z_slices loop -- see the note in
 `run_dce_validation` -- doesn't actually reduce work per slice). This
 script therefore validates on a reduced central sub-volume by default
 (`Z_SLICES`, `VOXELWISE_SUBSAMPLE`) and prints how to scale up.
-
-(A VAE/PCA latent-space comparison used to live here too; both were
-removed from the repo, along with this script's corresponding sections.)
 """
 import os
 import sys
@@ -121,7 +118,7 @@ def run_dce_validation(shape=(64, 64, 20), z_slices=None, voxelwise_subsample=12
     save_path = os.path.join(OUT_DIR, "dce_pinn")
     os.makedirs(save_path, exist_ok=True)
     trainer = Trainer(c_p=aif, num_of_compartment=1, t=t, device=DEVICE,
-                       affine=affine, save_path=save_path, epochs=pinn_epochs)
+                       affine=affine, save_path=save_path, epochs=pinn_epochs, windowed=False)
     t0 = time.time()
     ks_out, _ = trainer.train(img, z_slices=[0])
     print(f"[PINN] {time.time() - t0:.1f}s, output shape {ks_out.shape}")
@@ -214,7 +211,7 @@ def run_pet_validation(shape=(64, 64, 20), z_slices=None, voxelwise_subsample=80
     save_path = os.path.join(OUT_DIR, "pet_pinn")
     os.makedirs(save_path, exist_ok=True)
     trainer = Trainer(c_p=aif, num_of_compartment=2, t=t, device=DEVICE,
-                       affine=affine, save_path=save_path, epochs=pinn_epochs)
+                       affine=affine, save_path=save_path, epochs=pinn_epochs, windowed=False)
     t0 = time.time()
     ks_out, _ = trainer.train(img, z_slices=[0])
     print(f"[PINN] {time.time() - t0:.1f}s, output shape {ks_out.shape}")

@@ -18,7 +18,7 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
         glob.glob(os.path.join(root_path, "sub*"))
     )
 
-    for idx, sub_path in enumerate(subject_paths[:10], start=1):
+    for idx, sub_path in enumerate(subject_paths[:33], start=1):
 
         subject_id = os.path.basename(sub_path)
 
@@ -35,12 +35,12 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
 
         rpcancer_dixon = os.path.join(
             dce_path,
-            'rcancer_dixon.nii'
+            'rpcancer_dixon.nii'
         )
 
         rpnotcancer_dixon = os.path.join(
             dce_path,
-            'rnotcancer_dixon.nii'
+            'rpnotcancer_dixon.nii'
         )
 
 
@@ -48,13 +48,13 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
         mask_nc = nib.load(rpnotcancer_dixon).get_fdata()
 
         pet_rpcancer_dixon = os.path.join(
-            pet_path,
-            'rcancer_dixon.nii'
+            dce_path,
+            'rpcancer_dixon.nii'
         )
 
         pet_rpnotcancer_dixon = os.path.join(
-            pet_path,
-            'rnotcancer_dixon.nii'
+            dce_path,
+            'rpnotcancer_dixon.nii'
         )
 
 
@@ -67,50 +67,55 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
 
 
 
-        DCE_K = nib.load(os.path.join(sub_path,"dce","K.nii")).get_fdata()
+        DCE_K1 = nib.load(os.path.join(sub_path,"dce","K_mean_windowed.nii")).get_fdata()
 
-        PET_K = nib.load(os.path.join(sub_path,"pet","K.nii")).get_fdata()
+        PET_K = nib.load(os.path.join(sub_path,"pet","K_mean_windowed.nii")).get_fdata()
 
         # Compute crop margins as one-third of each dimension
-        cx = pet_mask_c.shape[0] // 7*3
-        cy = pet_mask_c.shape[1] // 7*3
-        cz = pet_mask_c.shape[2] // 7*3
+        cx = pet_mask_c.shape[0] // 3
+        cy = pet_mask_c.shape[1] // 3
+        cz = pet_mask_c.shape[2] // 3
+
+        pet_mask_c=pet_mask_c[cx: -cx, cy: -cy,:]
+        pet_mask_nc=pet_mask_nc[cx: -cx, cy: -cy,:]
 
         cxd = mask_c.shape[0] // 3
         cyd = mask_c.shape[1] // 3
+        mask_c=mask_c[cxd: -cxd, cyd: -cyd,:]
+        mask_nc=mask_nc[cxd: -cxd, cyd: -cyd,:]
 
 
         data[subject_id] = {
 
-         #   'not_cancer_K1':
-          #      PET_K[:, :, :, 0][pet_mask_nc[cx:-cx, cy:-cy, cz:-cz] > 0].mean(),
+            'not_cancer_K1':
+                PET_K[:, :, :, 0][pet_mask_nc > 0].mean(),
 
-           # 'cancer_K1':
-            #    PET_K[:, :, :, 0][pet_mask_c[cx:-cx, cy:-cy, cz:-cz] > 0].mean(),
+            'cancer_K1':
+                PET_K[:, :, :, 0][pet_mask_c> 0].mean(),
 
-            #'not_cancer_K2':
-             #   PET_K[:, :, :, 1][pet_mask_nc[cx:-cx, cy:-cy, cz:-cz] > 0].mean(),
+            'not_cancer_K2':
+                PET_K[:, :, :, 1][pet_mask_nc > 0].mean(),
 
-            #'cancer_K2':
-             #   PET_K[:, :, :, 1][pet_mask_c[cx:-cx, cy:-cy, cz:-cz] > 0].mean(),
+            'cancer_K2':
+                PET_K[:, :, :, 1][pet_mask_c > 0].mean(),
 
-           # 'not_cancer_K3':
-             #   PET_K[:, :, :, 2][pet_mask_nc[cx:-cx, cy:-cy, cz:-cz] > 0].mean(),
+          #  'not_cancer_K3':
+           #     PET_K[:, :, :, 2][pet_mask_nc[cx:-cx, cy:-cy, :] > 0].mean(),
 
-            #'cancer_K3':
-             #   PET_K[:, :, :, 2][pet_mask_c[cx:-cx, cy:-cy, cz:-cz] > 0].mean(),
+           # 'cancer_K3':
+            #   PET_K[:, :, :, 2][pet_mask_c[cx:-cx, cy:-cy, :] > 0].mean(),
 
             'not_cancer_Ktrans':
-                agg_fn(DCE_K[:, :, :, 0][mask_nc[cxd:-cxd, cyd:-cyd,:] > 0]),
+                agg_fn(DCE_K1[:, :, :][mask_nc > 0]),
 
             'cancer_Ktrans':
-                agg_fn(DCE_K[:, :, :, 0][mask_c[cxd:-cxd, cyd:-cyd, :] > 0]),
+                agg_fn(DCE_K1[:, :, :][mask_c > 0]),
 
             'not_cancer_Kkep':
-                agg_fn(DCE_K[:, :, :, 1][mask_nc[cxd:-cxd, cyd:-cyd, :] > 0]),
+                agg_fn(DCE_K1[:, :, :][mask_nc > 0]),
 
             'cancer_Kkep':
-                agg_fn(DCE_K[:, :, :, 1][mask_c[cxd:-cxd, cyd:-cyd, :] > 0])
+                agg_fn(DCE_K1[:, :, :][mask_c> 0])
 
         }
 

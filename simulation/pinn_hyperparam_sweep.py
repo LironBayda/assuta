@@ -1,166 +1,478 @@
 """
-Hyperparameter sweep for the PINN (core/pinn.py PhysicsInformedNN /
-core/train.py Trainer), scored against the known ground truth in the
-prostate phantom simulation. Covers three axes:
+Optuna hyperparameter search for the prostate-phantom PINN.
 
-  1. Training schedule (Adam-only vs. Adam+L-BFGS, learning rate)
-  2. f_x structure (hidden_size, with/without a bottleneck) and omega_0
-     (SIREN frequency scale)
-  3. Loss term weights (physics_weight, tac_consistency_weight, reg_weight)
+The search maximizes Pearson correlation between recovered K1 and the
+known phantom K1 map.
 
-Findings baked into the repo defaults as of this sweep:
-  - Pure Adam for the full epoch count (no L-BFGS phase) matched or
-    beat every two-phase Adam+L-BFGS schedule tried. The L-BFGS phase
-    has since been removed from core/train.py's Trainer entirely.
-  - omega_0: swept 0.1-50. Correlation peaks around omega_0=1
-    (mean K1 r=0.81-0.83 across seeded phantoms) and DEGRADES SHARPLY
-    above ~10 -- by omega_0=30-50 the loss itself diverges (loss=5.7 and
-    88.1 respectively, vs ~1 elsewhere), i.e. genuine training
-    instability, not just a worse optimum. **omega_0=1.0 is now the
-    default** (up from the old 0.1) in f_x/f_x_bpinn (core/model.py),
-    PhysicsInformedNN (core/pinn.py), and Trainer (core/train.py). This
-    is a markedly different value than the omega_0=10 found best for
-    the unrelated MVE fixed-length curve encoder --
-    f_x is a continuous-time trunk evaluated at arbitrary t, a different
-    regime, and the two sweeps land on different optima as expected.
-  - hidden_size: swept 20-100, with and without a bottleneck
-    (bottleneck_size = hidden_size/4). Best: hidden_size=40, NO
-    bottleneck (mean K1 r=0.827 vs 0.810 at hidden_size=20, vs 0.808 for
-    the best bottleneck variant tried, h60/b15) -- bottlenecking did not
-    help at any width tested. Beyond hidden_size=40 performance drifts
-    back down (h60/h80/h100 all sit around 0.86-0.87 on the single-seed
-    check, below h40's 0.90). **hidden_size=40 is now the default.**
-  - Loss weights: swept physics_weight in {0.001, 0.005, 0.01(default),
-    0.02, 0.1}, tac_consistency_weight in {0.001, 0.1, 1(->default via
-    None), 5, 20}, reg_weight in {1e-5, 1e-4(default), 1e-3, 1e-2}, at
-    the new best structure (omega_0=1.0, hidden_size=40). On a SINGLE
-    seed, physics_weight=0.02 (r=0.894) and reg_weight=0.01 (r=0.889)
-    both looked better than the defaults (r=0.877) -- but re-run across
-    3 seeds, physics_weight=0.02 turned out WORSE on average (mean
-    0.774 vs 0.826 for the defaults) -- a single-seed false lead caught
-    only by the multi-seed check. reg_weight=0.01 held up marginally
-    (0.829 vs 0.826) but the difference is within noise (std ~0.05).
-    Raising tac_consistency_weight to 1 or 5 was clearly worse at every
-    seed tried (r=0.55-0.76). **No loss-weight defaults were changed**
-    -- nothing tested robustly beat physics_weight=0.01,
-    tac_consistency_weight=None (defaults to physics_weight),
-    reg_weight=1e-4 once checked across seeds.
+Workflow
+--------
+1. Run many inexpensive Optuna/TPE trials using SEEDS_PER_TRIAL seeds.
+2. Take the best N_CONFIRM trials according to the search-time score.
+3. Re-run those candidates on all N_SEEDS_CONFIRM seeds.
+4. Select the final winner using the multi-seed mean.
 
-Run this file directly to reproduce the sweep (takes several minutes on
-CPU for the full ranges below); adjust N_SEEDS / EPOCHS to trade off
-thoroughness vs. runtime. Note the loss-weight section specifically
-demonstrates why the multi-seed check matters -- if you only run one
-seed, physics_weight=0.02 will look like a real win.
+IMPORTANT
+---------
+Do NOT treat study.best_value as the final result when
+SEEDS_PER_TRIAL < N_SEEDS_CONFIRM. A single seed can produce a false lead.
+
+The objective remains K1-only, matching the original run_config behavior.
 """
+
+from __future__ import annotations
+
 import os
 import sys
 import time
+from pathlib import Path
+from typing import Iterable
 
 import numpy as np
+import optuna
+from optuna.samplers import TPESampler
 from scipy.stats import pearsonr
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# ---------------------------------------------------------------------------
+# Project imports
+# ---------------------------------------------------------------------------
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from simulation.phantom import build_prostate_phantom
 from simulation.kinetics_literature import DCE_1TCM_PARAMS, sample_param_maps
 from simulation.forward_models import parker_aif, simulate_1tcm_volume
 from core.train import Trainer
 
-SHAPE = (32, 32, 8)
+
+# ---------------------------------------------------------------------------
+# Experiment configuration
+# ---------------------------------------------------------------------------
+
+SHAPE = (64, 64, 8)
 Z_IDX = [3, 4]
-EPOCHS = 300
-N_SEEDS = 3
+
+FRAME_DURATION = 0.1522
+N_FRAMES = 35
+NOISE_STD = 0.1
+
+EPOCHS = 100
+
+# Cheap score during Bayesian search.
+SEEDS_PER_TRIAL = 1
+N_TRIALS = 160
+
+# More reliable final confirmation.
+N_SEEDS_CONFIRM = 3
+N_CONFIRM = 3
+
+SCRATCH_DIR = PROJECT_ROOT / "simulation_data" / "validation_runs" / "_sweep_scratch"
 
 
-def build_case(seed):
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
+def safe_pearsonr(x: np.ndarray, y: np.ndarray) -> float:
+    """Return Pearson r, or NaN when correlation is undefined."""
+    x = np.asarray(x, dtype=float).ravel()
+    y = np.asarray(y, dtype=float).ravel()
+
+    if x.size < 2 or y.size < 2:
+        return float("nan")
+
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        valid = np.isfinite(x) & np.isfinite(y)
+        x = x[valid]
+        y = y[valid]
+
+    if x.size < 2:
+        return float("nan")
+
+    if np.std(x) == 0 or np.std(y) == 0:
+        return float("nan")
+
+    return float(pearsonr(x, y)[0])
+
+
+def parse_grad_clip(value) -> float | None:
+    """Convert Optuna's categorical grad-clip value to float/None."""
+    if value is None or value == "none":
+        return None
+    return float(value)
+
+
+# ---------------------------------------------------------------------------
+# Phantom generation
+# ---------------------------------------------------------------------------
+
+def build_case(seed: int):
+    """Build one noisy prostate phantom and return the PINN inputs/targets."""
     info = build_prostate_phantom(SHAPE, seed=seed)
     label = info.label
-    gt = sample_param_maps(label, DCE_1TCM_PARAMS, ["K1", "k2"], seed=seed)
-    t = np.cumsum(np.asarray([0.1522] * 35))
+
+    gt = sample_param_maps(
+        label,
+        DCE_1TCM_PARAMS,
+        ["K1", "k2"],
+        seed=seed,
+    )
+
+    t = np.cumsum(np.full(N_FRAMES, FRAME_DURATION, dtype=float))
     aif = parker_aif(t)
-    noisy, _ = simulate_1tcm_volume(t, aif, gt["K1"], gt["k2"], noise_std=0.03, rng=seed)
+
+    noisy, _ = simulate_1tcm_volume(
+        t,
+        aif,
+        gt["K1"],
+        gt["k2"],
+        noise_std=NOISE_STD,
+        rng=seed,
+    )
+
+    # Only use the requested phantom slices.
     img = noisy[:, :, :, Z_IDX]
     lab = label[:, :, Z_IDX]
-    gtK1 = gt["K1"][:, :, Z_IDX]
-    return t, aif, img, lab, gtK1
+    gt_k1 = gt["K1"][:, :, Z_IDX]
+
+    return t, aif, img, lab, gt_k1
 
 
-def run_config(tag, seeds=range(N_SEEDS), **kwargs):
-    rs = []
+# ---------------------------------------------------------------------------
+# Model evaluation
+# ---------------------------------------------------------------------------
+
+def run_config(
+    tag: str,
+    seeds: Iterable[int],
+    **kwargs,
+) -> float:
+    """
+    Train/evaluate one hyperparameter configuration across multiple seeds.
+
+    Returns
+    -------
+    float
+        Mean K1 Pearson correlation across valid seeds.
+    """
+    correlations = []
+
     for seed in seeds:
-        t, aif, img, lab, gtK1 = build_case(seed)
-        affine = np.eye(4)
-        save_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "simulation_data", "validation_runs", "_sweep_scratch", f"{tag}_{seed}",
+        t, aif, img, lab, gt_k1 = build_case(seed)
+
+        save_path = SCRATCH_DIR / f"{tag}_{seed}"
+        save_path.mkdir(parents=True, exist_ok=True)
+
+        trainer = Trainer(
+            c_p=aif,
+            num_of_compartment=1,
+            t=t,
+            device="cpu",
+            affine=np.eye(4),
+            save_path=str(save_path),
+            epochs=EPOCHS,
+            windowed=True,
+            **kwargs,
         )
-        os.makedirs(save_path, exist_ok=True)
-        trainer = Trainer(c_p=aif, num_of_compartment=1, t=t, device="cpu",
-                           affine=affine, save_path=save_path, epochs=EPOCHS, **kwargs)
-        ks_out, hist = trainer.train(img, z_slices=[0])
-        K1 = ks_out[0]
-        m = lab > 0
-        rs.append(pearsonr(K1[m], gtK1[m])[0])
-    print(f"{tag:30s} {kwargs}\n"
-          f"{'':30s} K1 corr mean={np.mean(rs):.3f} std={np.std(rs):.3f}")
-    return float(np.mean(rs))
+
+        ks_out, _ = trainer.train(img, z_slices=[0])
+        recovered_k1 = ks_out[0]
+
+        mask = lab > 0
+
+        r = safe_pearsonr(
+            recovered_k1[mask],
+            gt_k1[mask],
+        )
+
+        if np.isfinite(r):
+            correlations.append(r)
+
+    if not correlations:
+        return float("nan")
+
+    mean_r = float(np.mean(correlations))
+    std_r = float(np.std(correlations))
+
+    print(
+        f"{tag:24s} "
+        f"K1 r = {mean_r:.3f} ± {std_r:.3f} "
+        f"(n={len(correlations)})"
+    )
+
+    return mean_r
+
+
+# ---------------------------------------------------------------------------
+# Optuna objective
+# ---------------------------------------------------------------------------
+
+def objective(trial: optuna.Trial) -> float:
+    """Sample one configuration and return its search-time K1 score."""
+
+    hidden_size = trial.suggest_categorical(
+        "hidden_size",
+        [10, 20, 40, 60, 80, 100],
+    )
+
+    # The previous grid search showed that very large omega_0 values can
+    # become unstable. Keep the broad historical range, but sample
+    # logarithmically.
+    omega_0 = trial.suggest_float(
+        "omega_0",
+        0.1,
+        50.0,
+        log=True,
+    )
+
+    physics_weight = trial.suggest_float(
+        "physics_weight",
+        1e-3,
+        100.0,
+        log=True,
+    )
+
+    tac_consistency_weight = trial.suggest_float(
+        "tac_consistency_weight",
+        1e-3,
+        50.0,
+        log=True,
+    )
+
+    reg_weight = trial.suggest_float(
+        "reg_weight",
+        1e-5,
+        1e-2,
+        log=True,
+    )
+
+    causality_eps_final = trial.suggest_categorical(
+        "causality_eps_final",
+        [0, 100, 1000, 2000, 5000, 10000],
+    )
+
+    grad_clip = trial.suggest_categorical(
+        "grad_clip",
+        ["none", "0.1", "0.5", "1.0"],
+    )
+    grad_clip = parse_grad_clip(grad_clip)
+
+    lr = trial.suggest_float(
+        "lr",
+        1e-4,
+        1,
+        log=True,
+    )
+
+    # These parameters were already present in the supplied script.
+    kan_grid_size = trial.suggest_categorical(
+        "kan_grid_size",
+        [3, 5, 6, 7, 8, 9, 10],
+    )
+
+    kan_spline_order = trial.suggest_categorical(
+        "kan_spline_order",
+        [1, 2, 3],
+    )
+
+    kan_grid_range = trial.suggest_categorical(
+        "kan_grid_range",
+        [3, 5, 6, 7, 8, 9, 10],
+    )
+
+    score = run_config(
+        f"trial_{trial.number}",
+        seeds=range(SEEDS_PER_TRIAL),
+        hidden_size=hidden_size,
+        omega_0=omega_0,
+        physics_weight=physics_weight,
+        tac_consistency_weight=tac_consistency_weight,
+        reg_weight=reg_weight,
+        causality_eps_final=float(causality_eps_final),
+        grad_clip=grad_clip,
+        lr=lr,
+        kan_grid_size=kan_grid_size,
+        kan_spline_order=kan_spline_order,
+        kan_grid_range=(-kan_grid_range, kan_grid_range),
+    )
+
+    if not np.isfinite(score):
+        raise optuna.TrialPruned(
+            "K1 correlation was undefined for this trial."
+        )
+
+    return score
+
+
+# ---------------------------------------------------------------------------
+# Confirmation
+# ---------------------------------------------------------------------------
+
+def confirm_top_trials(study: optuna.Study):
+    """Re-score the top search trials on all confirmation seeds."""
+
+    completed = [
+        trial
+        for trial in study.trials
+        if trial.state == optuna.trial.TrialState.COMPLETE
+        and trial.value is not None
+        and np.isfinite(trial.value)
+    ]
+
+    top_trials = sorted(
+        completed,
+        key=lambda trial: trial.value,
+        reverse=True,
+    )[:N_CONFIRM]
+
+    print(
+        f"\n=== Confirming top {len(top_trials)} trials "
+        f"on {N_SEEDS_CONFIRM} seeds ==="
+    )
+
+    confirmed = []
+
+    for trial in top_trials:
+        params = dict(trial.params)
+
+        # Optuna stores grad_clip as a string category.
+        grad_clip = parse_grad_clip(params.pop("grad_clip"))
+
+        params["causality_eps_final"] = float(
+            params["causality_eps_final"]
+        )
+
+        confirmed_mean = run_config(
+            f"confirm_trial_{trial.number}",
+            seeds=range(N_SEEDS_CONFIRM),
+            grad_clip=grad_clip,
+            **params,
+        )
+
+        confirmed.append(
+            {
+                "trial_number": trial.number,
+                "search_score": float(trial.value),
+                "confirmed_score": confirmed_mean,
+                "params": trial.params,
+            }
+        )
+
+    confirmed.sort(
+        key=lambda row: (
+            -np.inf
+            if not np.isfinite(row["confirmed_score"])
+            else -row["confirmed_score"]
+        )
+    )
+
+    return confirmed
+
+
+def print_confirmed_results(confirmed):
+    """Print the final multi-seed ranking."""
+
+    print(
+        "\n=== Confirmed ranking "
+        "(use this ranking, NOT study.best_value) ==="
+    )
+
+    for row in confirmed:
+        search_score = row["search_score"]
+        confirmed_score = row["confirmed_score"]
+
+        if (
+            np.isfinite(confirmed_score)
+            and confirmed_score < search_score - 0.05
+        ):
+            flag = "  <-- large drop during confirmation"
+        else:
+            flag = ""
+
+        print(
+            f"trial_{row['trial_number']}: "
+            f"search={search_score:.3f}, "
+            f"confirmed={confirmed_score:.3f}"
+            f"{flag}"
+        )
+        print(f"  params={row['params']}")
+
+    if confirmed:
+        winner = confirmed[0]
+
+        print("\n=== FINAL WINNER ===")
+        print(f"trial_{winner['trial_number']}")
+        print(f"confirmed K1 r = {winner['confirmed_score']:.4f}")
+        print(f"parameters = {winner['params']}")
+
+        return winner
+
+    print("\nNo valid confirmed trials were produced.")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    start_time = time.time()
+
+    print("Starting Optuna PINN hyperparameter search")
+    print(f"Trials: {N_TRIALS}")
+    print(f"Seeds per trial: {SEEDS_PER_TRIAL}")
+    print(f"Confirmation seeds: {N_SEEDS_CONFIRM}")
+    print(f"Final candidates: {N_CONFIRM}")
+
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=TPESampler(seed=0),
+    )
+
+    try:
+        study.optimize(
+            objective,
+            n_trials=N_TRIALS,
+        )
+    except KeyboardInterrupt:
+        print("\nSearch interrupted by user.")
+
+    completed = [
+        trial
+        for trial in study.trials
+        if trial.state == optuna.trial.TrialState.COMPLETE
+        and trial.value is not None
+    ]
+
+    print(
+        f"\n=== Optuna search finished: "
+        f"{len(study.trials)} trials ==="
+    )
+
+    if not completed:
+        print("No completed trials.")
+        return
+
+    best = study.best_trial
+
+    print(
+        f"Best search-time trial: trial_{best.number}, "
+        f"value={best.value:.3f}"
+    )
+    print(
+        "WARNING: this is only the search-time score and is not "
+        "the final result when using fewer seeds per trial."
+    )
+    print(f"Parameters: {best.params}")
+
+    confirmed = confirm_top_trials(study)
+    winner = print_confirmed_results(confirmed)
+
+    elapsed = time.time() - start_time
+    print(f"\nTotal runtime: {elapsed:.1f} s")
+
+    return study, confirmed, winner
 
 
 if __name__ == "__main__":
-    t0 = time.time()
-    print("=== Training schedule ===")
-    run_config("adam_only_default", seeds=[0])
-    # (two-phase Adam+L-BFGS comparison removed along with the L-BFGS
-    # phase itself, which the result below made obsolete)
-
-    print("\n=== omega_0 (wide sweep, up to 50) ===")
-    for om in [1, 2, 5, 10, 20, 30, 50]:
-        run_config(f"omega{om}", seeds=[0], omega_0=float(om), hidden_size=20)
-
-    print("\n=== hidden_size (up to 100), no bottleneck ===")
-    for hs in [20, 40, 60, 80, 100]:
-        run_config(f"nb_h{hs}", seeds=[0], omega_0=1.0, hidden_size=hs)
-
-    print("\n=== hidden_size with bottleneck (size = hidden/4) ===")
-    for hs, bn in [(40, 10), (60, 15), (80, 20), (100, 25), (100, 10)]:
-        run_config(f"bn_h{hs}_b{bn}", seeds=[0], omega_0=1.0, hidden_size=hs, bottleneck_size=bn)
-
-    print("\n=== Best structure, multi-seed confirmation ===")
-    run_config("h20_confirm", seeds=range(N_SEEDS), omega_0=1.0, hidden_size=20)
-    run_config("h40_confirm", seeds=range(N_SEEDS), omega_0=1.0, hidden_size=40)
-    run_config("h60_b15_confirm", seeds=range(N_SEEDS), omega_0=1.0, hidden_size=60, bottleneck_size=15)
-
-    print("\n=== Loss weights (at best structure: omega_0=1.0, hidden_size=40) ===")
-    run_config("loss_default", seeds=[0], omega_0=1.0, hidden_size=40)
-    for pw in [0.001, 0.005, 0.02, 0.1]:
-        run_config(f"physw_{pw}", seeds=[0], omega_0=1.0, hidden_size=40, physics_weight=pw)
-    for tcw in [0.001, 0.1, 1, 5]:
-        run_config(f"tacw_{tcw}", seeds=[0], omega_0=1.0, hidden_size=40, tac_consistency_weight=tcw)
-    for rw in [1e-5, 1e-3, 1e-2]:
-        run_config(f"regw_{rw}", seeds=[0], omega_0=1.0, hidden_size=40, reg_weight=rw)
-
-    print("\n=== Loss weights, multi-seed confirmation (this is where physics_weight=0.02 falls apart) ===")
-    run_config("loss_base_confirm", seeds=range(N_SEEDS), omega_0=1.0, hidden_size=40)
-    run_config("physw002_confirm", seeds=range(N_SEEDS), omega_0=1.0, hidden_size=40, physics_weight=0.02)
-    run_config("regw001_confirm", seeds=range(N_SEEDS), omega_0=1.0, hidden_size=40, reg_weight=0.01)
-
-    print("\n=== causality_eps_final / tac_consistency_weight / grad_clip (lr=0.01) ===")
-    common = dict(lr=0.01)
-    for ce in [0, 1, 10, 100, 1000, 2000, 5000, 10000]:
-        run_config(f"ce{ce}", seeds=[0], causality_eps_final=float(ce), **common)
-    print("\n--- tac_consistency_weight at causality_eps_final=2000, multi-seed ---")
-    run_config("tcw_default", seeds=range(N_SEEDS), causality_eps_final=2000.0, **common)
-    run_config("tcw0.05", seeds=range(N_SEEDS), causality_eps_final=2000.0,
-               tac_consistency_weight=0.05, **common)
-    run_config("tcw0.5", seeds=range(N_SEEDS), causality_eps_final=2000.0,
-               tac_consistency_weight=0.5, **common)
-    print("\n--- grad_clip at causality_eps_final=2000, multi-seed ---")
-    run_config("gc_default_1.0", seeds=range(N_SEEDS), causality_eps_final=2000.0,
-               grad_clip=1.0, **common)
-    run_config("gc_0.5", seeds=range(N_SEEDS), causality_eps_final=2000.0,
-               grad_clip=0.5, **common)
-    run_config("gc_none", seeds=range(N_SEEDS), causality_eps_final=2000.0,
-               grad_clip=None, **common)
-
-    print(f"\nTotal sweep time: {time.time()-t0:.1f}s")
-
+    main()

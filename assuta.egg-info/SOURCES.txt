@@ -10,13 +10,12 @@ assuta.egg-info/requires.txt
 assuta.egg-info/top_level.txt
 core/__init__.py
 core/create_blood_mask.py
+core/kan_layers.py
 core/losses.py
 core/model.py
 core/pinn.py
 core/train.py
-core/uncertainty.py
 core/utils.py
-core/windowed.py
 dce/__init__.py
 dce/analysis.py
 dce/preprocessing.py
@@ -32,10 +31,9 @@ registration/utils.py
 simulation/circle_phantom.py
 simulation/forward_models.py
 simulation/kinetics_literature.py
+simulation/noise_aif_benchmark.py
 simulation/noise_sparsity_experiment.py
 simulation/phantom.py
 simulation/pinn_hyperparam_sweep.py
-simulation/train_all_models.py
-simulation/uncertainty_correlation.py
 simulation/validate.py
 simulation/voxelwise_pet.py

@@ -258,8 +258,8 @@ def preprocessing(path: str, dyn_pattern: str = "*_pet*",dce_pattern: str = "*dy
     )
     print("[INFO] AIF plot saved.")
 
-    img, affine, voxel_size = load_dynamic_pet(dyn_path)
+    img, affine, voxel_size = load_dynamic_pet(dce_path)
     # ----------------------------
     # 5. Return results
     # ----------------------------
-    return img, aif, affine
+    return pet_corr, aif, affine

@@ -15,14 +15,24 @@ def pipeline(
         epochs=PINN["epochs"],
         device=DEVICE,
         method="pinn",
-        n_ensemble=5,
-        dropout_p=0.1,
+        windowed=True,
+        axis="xy",
+        stride=None,
+        activation="sine",
+        arch="kan",
 ):
     """
     Full PET kinetic pipeline -- mirrors dce.analysis.pipeline's
-    structure/method dispatch ("pinn" / "voxelwise" / "bayesian") rather
-    than being a PINN-only hardcoded function, for consistency across
-    modalities.
+    structure/method dispatch ("pinn" / "voxelwise") rather than being a
+    PINN-only hardcoded function, for consistency across modalities.
+
+    activation, arch : trunk configuration for method="pinn", forwarded to
+        core.train.Trainer -- see Trainer's docstring for the three
+        supported configurations (arch="mlp"+activation="sine"/"tanh", or
+        arch="kan" which is silu-only and ignores `activation`). Untested
+        on PET specifically as of this wiring -- the mlp+sine recipe this
+        Trainer's other defaults were tuned against was a 1TCM/DCE
+        simulation (see Trainer's docstring), not PET/2TCM.
 
     method:
         "pinn"       -> PINN kinetic fitting (1TCM if num_of_compartment=1,
@@ -31,16 +41,25 @@ def pipeline(
                         (calculate_pet_voxelwise_1tcm) if
                         num_of_compartment=1, else the full irreversible
                         2TCM fit (calculate_pet_voxelwise)
-        "bayesian"  -> Sine B-PINN deep ensemble: same K1/k2(/k3) point
-                        estimate as "pinn", PLUS a per-voxel uncertainty
-                        map (see core/uncertainty.py). Saves K_mean.nii,
-                        K_uncertainty.nii, and K_uncertainty_demeaned.nii
-                        (prefer the demeaned map for per-voxel calibration
-                        checks). Costs ~n_ensemble x the runtime of a
-                        single "pinn" fit.
 
-    n_ensemble, dropout_p : only used by method="bayesian" -- see
-        core.uncertainty.estimate_with_uncertainty.
+    windowed, axis, slice_window, window_size : see
+        dce.analysis.pipeline's docstring / core.train.Trainer -- only
+        used when method="pinn".
+
+    CAVEAT (num_of_compartment=2, the default here): the recipe these
+    defaults reflect (Trainer's own defaults -- hidden_size=10,
+    physics_weight annealed 0.01->100, windowed=True/axis=xy/
+    window_size=16) was found and multi-seed-tested on 1TCM/DCE
+    specifically. The Ve-unified parameterization fix itself
+    (core/model.py's convolve_1cm_for_minimize/get_x_1tcm) only applies
+    to the 1TCM code path -- 2TCM's get_x_2tcm was already internally
+    consistent and untouched by that fix. But the OTHER new defaults
+    (hidden_size=10, the physics_weight anneal, windowed/axis/
+    window_size) flow through to 2TCM via the shared Trainer regardless,
+    without having been independently verified there. If PET/2TCM
+    results look worse than before, try overriding hidden_size=40,
+    physics_weight=0.01, physics_weight_start=None, windowed=False
+    explicitly (the old defaults) until this gets its own sweep.
     """
 
     # -----------------------------
@@ -49,8 +68,8 @@ def pipeline(
     img, aif, affine = preprocessing(path)
     # img: (X, Y, Z, T)
 
-    x, y, z, _ = np.asarray(img.shape) // 7 * 3
-    cropped = img[x:-x, y:-y, z:-z, :].transpose(3, 0, 1, 2)
+    x, y, z, _ = np.asarray(img.shape) //  3
+    cropped = img[x:-x, y:-y, :, :].transpose(3, 0, 1, 2)
     # (T, X, Y, Z)
 
     new_affine = affine.copy()
@@ -63,7 +82,21 @@ def pipeline(
     # wrong time axis. dce.analysis.pipeline already cumsum()s DCE["dt"]
     # for exactly this reason; do the same here for consistency and
     # correctness.
-    t = np.cumsum(PET["dt"])
+    # BUGFIX #2: a PRIOR bugfix here (see the note above) added cumsum()
+    # but never converted seconds to minutes. config.PET["dt"] holds frame
+    # durations in SECONDS (e.g. [10, 20, 30, ..., 1200] -- 10s, 20s, 30s,
+    # ... frames); np.cumsum(...) alone gives cumulative SECONDS. Every
+    # other part of this codebase assumes MINUTES: kinetics_literature.py's
+    # K1/k2/k3 ranges are explicitly documented "units: 1/min",
+    # feng_input_function and every simulation test script this session
+    # divided by 60 before using cumsum'd PET timestamps. Without the
+    # /60.0 below, this pipeline was feeding a ~60x-too-large time axis to
+    # every downstream PINN/voxelwise fit -- e.g. a literature k3~0.11/min
+    # value would appear to decay ~60x slower than intended against
+    # seconds-scale t, making the tracer look essentially non-trapping
+    # within any real scan window. This affects EVERY prior PET pipeline
+    # run through this function.
+    t = np.cumsum(PET["dt"]) / 60.0
 
     # -----------------------------
     # 2. PINN
@@ -78,23 +111,14 @@ def pipeline(
             affine=new_affine,
             save_path=path,
             epochs=epochs,
+            activation=activation,
+            arch=arch,
+            windowed=windowed,
+            axis=axis,
+            stride=stride,
         )
 
-        return trainer.train_ensemble(cropped)
-
-    # -----------------------------
-    # 2b. Sine B-PINN ensemble (point estimate + per-voxel uncertainty)
-    # -----------------------------
-    elif method == "bayesian":
-        from core.uncertainty import estimate_with_uncertainty
-
-        tissue_mask = cropped.max(axis=0) > (cropped.max() * 0.05)
-        return estimate_with_uncertainty(
-            cropped, aif, t, num_of_compartment=num_of_compartment,
-            save_path=path, affine=new_affine, device=device,
-            n_ensemble=n_ensemble, epochs=epochs, dropout_p=dropout_p,
-            tissue_mask=tissue_mask,
-        )
+        return trainer.train(cropped)
 
     # -----------------------------
     # 3. Classical voxelwise fitting
@@ -115,11 +139,15 @@ def pipeline(
         raise ValueError(f"Unknown method {method}")
 
 
-def run_all_pet(root_path, epochs=1000, device="cpu", method="pinn", n_ensemble=5, dropout_p=0.1):
+def run_all_pet(root_path, epochs=1000, device="cpu", method="pinn",
+                 windowed=True, axis="xy", slice_window=1, window_size=16, stride=None,
+                 activation="sine", arch="mlp"):
     """
     Batch executor for PET pipelines -- mirrors dce.analysis.run_all_dce.
     Processes all subjects matching sub*/pet within the root directory.
-    n_ensemble, dropout_p are only used when method="bayesian".
+    windowed, axis, slice_window, window_size, stride are only used when method="pinn".
+    activation, arch : forwarded to pipeline() (method="pinn" only) -- see
+    pipeline()'s docstring / Trainer's.
     """
     import glob
 
@@ -141,6 +169,7 @@ def run_all_pet(root_path, epochs=1000, device="cpu", method="pinn", n_ensemble=
         print(f"[{i}/{len(subject_paths)}] Processing {subject_id}")
         try:
             pipeline(pet_path, epochs=epochs, device=device, method=method,
-                     n_ensemble=n_ensemble, dropout_p=dropout_p)
+                     windowed=windowed, axis=axis,
+                     stride=stride, activation=activation, arch=arch)
         except Exception as e:
             print(f"[ERROR] {subject_id}: {e}")

@@ -139,8 +139,11 @@ def pipeline(
         epochs=PINN["epochs"],
         device=DEVICE,
         method="pinn",
-        n_ensemble=5,
-        dropout_p=0.1,
+        windowed=True,
+        axis="xy",
+        stride=None,
+        activation="sine",
+        arch="kan",
 ):
     """
     Full DCE/PET kinetic pipeline.
@@ -148,17 +151,31 @@ def pipeline(
     method:
         "pinn"       -> PINN kinetic fitting (point estimate only)
         "voxelwise" -> classical voxelwise ODE fitting
-        "bayesian"  -> Sine B-PINN deep ensemble: same K1/k2(/k3) point
-                       estimate as "pinn", PLUS a per-voxel uncertainty
-                       map (see core/uncertainty.py). Saves K_mean.nii,
-                       K_uncertainty.nii, and K_uncertainty_demeaned.nii
-                       (prefer the demeaned map for per-voxel calibration
-                       checks -- see core.uncertainty.estimate_with_uncertainty's
-                       docstring for why). Costs ~n_ensemble x the runtime
-                       of a single "pinn" fit.
 
-    n_ensemble, dropout_p : only used by method="bayesian" -- see
-        core.uncertainty.estimate_with_uncertainty.
+    activation, arch : trunk configuration, forwarded to core.train.Trainer
+        -- see Trainer's docstring for the three supported configurations
+        (arch="mlp"+activation="sine"/"tanh", or arch="kan" which is
+        silu-only and ignores `activation`).
+    windowed : bool, default True -- if True (method="pinn" only),
+        trains independent per-window PINNs (core.train.Trainer's
+        windowed mode) instead of one whole-image fit. See Trainer's
+        docstring for the full rationale/tradeoffs and the underlying
+        recipe (Ve-unified 1TCM parameterization, annealed
+        physics_weight, hidden_size=10) this default now assumes --
+        tuned on 1TCM/DCE specifically, not yet independently verified
+        for 2TCM/PET.
+    axis : "xy" (default), "z", or "xyz" -- see core.train.Trainer's
+        _train_windowed docstring.
+    window_size : int, (int, int), or (int, int, int), default 16 --
+        (axis="xy": int or (X,Y) tuple; axis="xyz": REQUIRED (X,Y,Z)
+        tuple) spatial window size.
+    stride : int, (int, int), or (int, int, int), optional -- (axis="xy"
+        or "xyz" only) defaults to window_size (non-overlapping windows).
+    slice_window : int, default 1 -- (axis="z" only) Z-slices per window.
+    epochs : default 1000 -- windowed training's physics_weight
+        annealing ramps across the full schedule; see
+        core.train.Trainer's docstring on why this default rose from an
+        earlier, much smaller value.
     """
 
 
@@ -209,27 +226,14 @@ def pipeline(
             affine=new_affine,
             save_path=path,
             epochs=epochs,
+            activation=activation,
+            arch=arch,
+            windowed=windowed,
+            axis=axis,
+            stride=stride,
         )
 
-        trainer.train_ensemble(cropped)
-
-
-
-    # -----------------------------
-    # 2b. Sine B-PINN ensemble (point estimate + per-voxel uncertainty)
-    # -----------------------------
-
-    elif method == "bayesian":
-        from core.uncertainty import estimate_with_uncertainty
-
-        tissue_mask = cropped.max(axis=0) > (cropped.max() * 0.05)
-        result = estimate_with_uncertainty(
-            cropped, aif, t, num_of_compartment=num_of_compartment,
-            save_path=path, affine=new_affine, device=device,
-            n_ensemble=n_ensemble, epochs=epochs, dropout_p=dropout_p,
-            tissue_mask=tissue_mask,
-        )
-        return result
+        return trainer.train(cropped)
 
 
 
@@ -259,11 +263,14 @@ def pipeline(
         raise ValueError(
             f"Unknown method {method}"
         )
-def run_all_dce(root_path, epochs=1000, device="cpu", method="pinn", n_ensemble=5, dropout_p=0.1):
+def run_all_dce(root_path, epochs=1000, device="cpu", method="pinn",
+                 windowed=True, axis="xy", slice_window=1, window_size=16, stride=None,
+                 activation="sine", arch="mlp"):
     """
     FDA-style batch executor for DCE pipelines.
     Processes all subjects matching sub*/dce within the root directory.
-    n_ensemble, dropout_p are only used when method="bayesian".
+    windowed, axis, slice_window, window_size, stride are only used when method="pinn".
+    activation, arch : forwarded to pipeline() -- see its docstring / Trainer's.
     """
 
     print(f"[INFO] Searching for subjects in: {root_path}")
@@ -289,7 +296,8 @@ def run_all_dce(root_path, epochs=1000, device="cpu", method="pinn", n_ensemble=
 
         try:
             pipeline(dce_path, epochs=epochs, device=device, method=method,
-                     n_ensemble=n_ensemble, dropout_p=dropout_p)
+                     windowed=windowed, axis=axis,
+                     stride=stride, activation=activation, arch=arch)
             print(f"[SUCCESS] {subject_id} completed.\n")
 
         except Exception as e:

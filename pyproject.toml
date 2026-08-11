@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "assuta"
 version = "0.1.0"
-description = "DCE-MRI / dynamic PET kinetic parameter estimation: PINN, voxelwise, validated against literature-grounded simulation"
+description = "DCE-MRI / dynamic PET kinetic parameter estimation: PINN, voxelwise, VAE/MVE, validated against literature-grounded simulation"
 requires-python = ">=3.8"
 dependencies = [
     "numpy",
@@ -13,6 +13,7 @@ dependencies = [
     "torch",
     "nibabel",
     "SimpleITK",
+    "pydicom",
 ]
 
 [project.scripts]
@@ -20,7 +21,7 @@ assuta = "assuta_cli:main"
 
 [tool.setuptools]
 # Every existing top-level package is kept as-is (core, dce, pet,
-#  simulation, registration, io_utils) rather than nested
+# VAE_initi, simulation, registration, io_utils) rather than nested
 # under a single "assuta/" directory, to avoid rewriting every
 # `from core.X import Y`-style import built up across this project --
 # see README.md's "Package layout" section for the rationale.

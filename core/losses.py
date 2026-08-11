@@ -40,10 +40,6 @@ class PINNLoss(nn.Module):
         ----------
         tacs_num : int
             Number of TAC time points predicted by the network.
-        vae : nn.Module or None
-            Reserved for a future VAE latent/prior loss term. Currently
-            unused — if passed, a warning is logged once so callers don't
-            silently assume it's active.
         physics_weight : float
             Weight for the ODE-residual terms in the physics loss.
         tac_consistency_weight : float or None
@@ -64,7 +60,8 @@ class PINNLoss(nn.Module):
             to enforce that early-time residuals are learned before later
             ones are allowed to dominate the loss.
         image_shape : tuple or None
-            Reserved for future VAE-based spatial prior loss. Unused.
+            Reserved for a future spatial-prior loss term. Not used
+            internally by this class currently.
         voxel_weight : torch.Tensor, shape (tacs_num,), or None
             Per-voxel multiplicative weight applied to every loss term
             before summing over voxels. Fixes a real failure mode found

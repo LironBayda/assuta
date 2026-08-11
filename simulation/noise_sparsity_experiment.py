@@ -1,37 +1,20 @@
 """
 Noise and temporal-sparsity sweep: voxelwise NLLS vs tanh-PINN vs
-Sine-PINN vs Sine-B-PINN (deep ensemble with uncertainty), for both DCE
-(1TCM, Rician+Gaussian noise) and PET (2TCM, Poisson+Gaussian noise).
+Sine-PINN, for both DCE (1TCM, Rician+Gaussian noise) and PET (2TCM,
+Poisson+Gaussian noise).
 
 This is meant to be edited and re-run, not just executed once -- the
-grids (NOISE_LEVELS, SPARSITY_LEVELS), phantom size, epoch count, and
-ensemble size are all constants at the top for exactly that. Full runs
-(1000 epochs, n_ensemble=5, all four methods x both axes x both
-modalities) are compute-heavy -- see "Performance notes" below before
-scaling up.
+grids (NOISE_LEVELS, SPARSITY_LEVELS), phantom size, and epoch count are
+all constants at the top for exactly that.
 
 Usage
 -----
     python simulation/noise_sparsity_experiment.py                # full grid, both axes, both modalities
     python simulation/noise_sparsity_experiment.py --axis noise --modality dce
-    python simulation/noise_sparsity_experiment.py --methods voxelwise pinn_sine --epochs 300 --n-ensemble 2
+    python simulation/noise_sparsity_experiment.py --methods voxelwise sine_pinn --epochs 300
 
 Output: simulation_data/validation_runs/noise_sparsity/results.json
 (one row per modality x axis x level x method), plus a printed table.
-
-Performance notes
-------------------
-- Bayesian (Sine-B-PINN) is ~n_ensemble x the cost of a single PINN fit.
-  At 1000 epochs / n_ensemble=5 / a 32x32x8 phantom, ONE bayesian data
-  point took roughly 3-4 minutes on CPU in earlier testing this session
-  -- a full 4-method x 2-axis x N-levels x 2-modality grid at that scale
-  is realistically a multi-hour run, not something to fire off and wait
-  on interactively. Start with --epochs 300 --n-ensemble 2 --shape 24 24 6
-  to sanity check the whole pipeline runs end-to-end in a few minutes,
-  then scale up.
-- voxelwise and plain PINN methods are much cheaper (seconds to ~1 min
-  each at the same phantom size) -- fine to run at full settings even
-  while you're still tuning the bayesian settings.
 """
 import argparse
 import itertools
@@ -53,7 +36,6 @@ from simulation.forward_models import (
 from dce.analysis import calculate_dce_voxelwise
 from simulation.voxelwise_pet import calculate_pet_voxelwise
 from core.train import Trainer
-from core.uncertainty import estimate_with_uncertainty
 
 OUT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -68,7 +50,7 @@ SPARSITY_LEVELS = {
     "moderate": 0.1522,  # this repo's default DCE frame duration
     "coarse": 0.5,       # coarse -- likely misses the AIF peak
 }
-METHODS = ["voxelwise", "tanh_pinn", "sine_pinn", "sine_bpinn"]
+METHODS = ["voxelwise", "tanh_pinn", "sine_pinn"]
 DEFAULT_SHAPE = (32, 32, 8)
 
 
@@ -93,7 +75,7 @@ def build_pet_data(shape, seed, snr, dt_sec):
     return img, t, aif, label, gt, 2
 
 
-def run_method(method, img, t, aif, num_of_compartment, epochs, n_ensemble, dropout_p, mask):
+def run_method(method, img, t, aif, num_of_compartment, epochs, mask):
     """Returns (K1_map, extra_info_dict)."""
     if method == "voxelwise":
         if num_of_compartment == 1:
@@ -104,30 +86,23 @@ def run_method(method, img, t, aif, num_of_compartment, epochs, n_ensemble, drop
 
     elif method == "tanh_pinn":
         trainer = Trainer(c_p=aif, num_of_compartment=num_of_compartment, t=t, device="cpu",
-                           affine=np.eye(4), save_path=None, epochs=epochs, activation="tanh")
+                           affine=np.eye(4), save_path=None, epochs=epochs, activation="tanh",
+                           windowed=False)
         ks_out, hist = trainer.train(img, z_slices=[0])
         return ks_out[0], {"final_loss": hist["loss"][-1]}
 
     elif method == "sine_pinn":
         trainer = Trainer(c_p=aif, num_of_compartment=num_of_compartment, t=t, device="cpu",
-                           affine=np.eye(4), save_path=None, epochs=epochs, activation="sine")
+                           affine=np.eye(4), save_path=None, epochs=epochs, activation="sine",
+                           windowed=False)
         ks_out, hist = trainer.train(img, z_slices=[0])
         return ks_out[0], {"final_loss": hist["loss"][-1]}
-
-    elif method == "sine_bpinn":
-        res = estimate_with_uncertainty(
-            img, aif, t, num_of_compartment=num_of_compartment, save_path=None,
-            n_ensemble=n_ensemble, epochs=epochs, dropout_p=dropout_p, tissue_mask=mask,
-            activation="sine",
-        )
-        K1_unc = res["K_uncertainty_demeaned"][0]
-        return res["K_mean"][0], {"mean_uncertainty": float(K1_unc[mask].mean())}
 
     else:
         raise ValueError(f"unknown method {method!r}")
 
 
-def run_sweep(axis, modality, methods, epochs, n_ensemble, dropout_p, shape, seed):
+def run_sweep(axis, modality, methods, epochs, shape, seed):
     """axis: 'noise' or 'sparsity'. modality: 'dce' or 'pet'."""
     levels = NOISE_LEVELS if axis == "noise" else SPARSITY_LEVELS
     results = []
@@ -148,7 +123,7 @@ def run_sweep(axis, modality, methods, epochs, n_ensemble, dropout_p, shape, see
         for method in methods:
             t0 = time.time()
             try:
-                K1_pred, extra = run_method(method, img, t, aif, num_c, epochs, n_ensemble, dropout_p, mask)
+                K1_pred, extra = run_method(method, img, t, aif, num_c, epochs, mask)
                 r = float(pearsonr(K1_pred[mask], gtK1[mask])[0])
             except Exception as e:
                 r = None
@@ -169,8 +144,6 @@ def main():
     parser.add_argument("--modality", choices=["dce", "pet", "both"], default="both")
     parser.add_argument("--methods", nargs="+", default=METHODS, choices=METHODS)
     parser.add_argument("--epochs", type=int, default=1000)
-    parser.add_argument("--n-ensemble", type=int, default=5)
-    parser.add_argument("--dropout-p", type=float, default=0.1)
     parser.add_argument("--shape", type=int, nargs=3, default=list(DEFAULT_SHAPE))
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
@@ -180,8 +153,7 @@ def main():
 
     all_results = []
     for modality, axis in itertools.product(modalities, axes):
-        all_results += run_sweep(axis, modality, args.methods, args.epochs, args.n_ensemble,
-                                  args.dropout_p, tuple(args.shape), args.seed)
+        all_results += run_sweep(axis, modality, args.methods, args.epochs, tuple(args.shape), args.seed)
 
     out_path = os.path.join(OUT_DIR, "results.json")
     with open(out_path, "w") as f:

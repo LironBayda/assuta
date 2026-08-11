@@ -8,7 +8,7 @@ summaries -- not a substitute for fitting your own data -- intended to
 give the simulation physiologically plausible contrast between normal
 prostate and cancer, in the right ballpark and with the right *direction*
 of effect (which tissue is higher/lower), which is what matters for
-validating whether voxelwise / PINN / VAE recover the correct parameters.
+validating whether voxelwise / PINN recover the correct parameters.
 
 DCE-MRI (1-tissue-compartment / standard Tofts model: K1 == Ktrans, k2 == kep)
 --------------------------------------------------------------------------
@@ -32,7 +32,15 @@ Dynamic PET (irreversible 2-tissue-compartment model: K1, k2, k3, k4=0)
   18 patients): irreversible 2TCM fit best; lesions show significantly
   *elevated* K1 and k3 and significantly *decreased* k2 relative to
   reference (non-cancerous) prostate tissue. PMC10781928 / EJNMMI Research
-  2024.
+  2024. Model selection was tested directly against two alternatives (a
+  reversible 1TCM and a reversible 2TCM) using goodness-of-fit and
+  information-loss criteria -- irreversible 2TCM won, "consistently
+  appropriate across prostatic zones."
+- Mechanistic confirmation, independent cohort: dynamic whole-body
+  [68Ga]Ga-PSMA-11 / [18F]PSMA-1007 PET, 20 patients -- "for PCa lesions,
+  k4 ~ 0, as the binding is predominantly irreversible" (PSMA
+  internalization after receptor binding). PMC10105814 / EJNMMI Research
+  2023.
 - [18F]DCFPyL vs [18F]fluorocholine dynamic PET (flow-modified 2TCM):
   K1 ~0.30 vs 0.24 mL/min/g for dominant intraprostatic lesion vs. benign
   tissue (modest but significant increase). PMC7782622.
@@ -94,6 +102,82 @@ PET_2TCM_PARAMS = {
 }
 
 TISSUE_CLASSES = {0: "background", 1: "prostate_normal", 2: "prostate_cancer"}
+
+# ---------------------------------------------------------------------
+# ADC (diffusion-MRI cellularity marker), correlated with PET/PSMA uptake
+# ---------------------------------------------------------------------
+# Domachevsky et al. (Eur Radiol 2018;28:5275-5283, PMC/DOI
+# 10.1007/s00330-018-5484-1): 22 patients, 44 prostate regions (22
+# intra-prostatic cancer [IPC], 22 normal prostatic tissue [NPT]).
+# IPC had significantly HIGHER PSMA SUVmax and significantly LOWER
+# ADCmin/ADCmean than NPT (both p<0.0001). Measured correlation strength
+# between PSMA SUVmax and ADC: rho=-0.717 to -0.740 (SUVmax vs ADCmin,
+# both PET/MR-MRAC and PET/CT-CTAC) and rho=-0.737 (SUVmax vs ADCmean) --
+# i.e. higher PSMA uptake goes with lower ADC (denser tissue) fairly
+# strongly, not just directionally.
+#
+# The paper's abstract does not give exact ADCmin/ADCmean median values
+# (only that IPC vs NPT differ, p<0.0001) -- ADC_TARGET_RANGES below
+# uses commonly-reported prostate ADC ranges from the broader DWI
+# literature for the baseline scale (illustrative, same caveat as the
+# rest of this module), while the CORRELATION STRENGTH (rho~-0.73) is
+# the actual number taken from this paper specifically.
+ADC_TARGET_RANGES = {
+    # (mean, std) in units of 10^-3 mm^2/s -- typical reported prostate
+    # peripheral-zone ranges; illustrative baseline scale only.
+    "prostate_normal": (1.6, 0.3),
+    "prostate_cancer": (0.85, 0.20),
+}
+
+
+def sample_correlated_adc(K1_map, label, rho=-0.73, seed=None):
+    """
+    Sample a per-voxel ADC map (diffusion-MRI cellularity marker,
+    10^-3 mm^2/s) correlated with an already-sampled K1_map (PSMA
+    uptake), at approximately the target Spearman rho -- see the
+    citation above (Domachevsky et al. 2018) for where rho=-0.73 comes
+    from. Uses a Gaussian-copula construction: within each tissue class,
+    convert K1 to a normal rank-score, mix in independent noise to hit
+    the target correlation, then map back through that class's target
+    ADC distribution -- so the MARGINAL ADC distribution per class comes
+    from ADC_TARGET_RANGES while the K1-ADC correlation comes from rho.
+
+    K1_map : (X, Y, Z) float array, already sampled (e.g. via
+        sample_param_maps(..., PET_2TCM_PARAMS, ["K1", ...])).
+    label : (X, Y, Z) uint8 array, same convention as sample_param_maps.
+    rho : target Spearman-style correlation between K1 and ADC within
+        each tissue class (default -0.73, this paper's measured value).
+
+    Returns (X, Y, Z) float32 ADC map. Background voxels are set to 0.
+    """
+    import numpy as np
+    from scipy.stats import rankdata, norm
+
+    rng = np.random.default_rng(seed)
+    adc_map = np.zeros(label.shape, dtype=np.float32)
+
+    for cls_val, cls_name in TISSUE_CLASSES.items():
+        if cls_name not in ADC_TARGET_RANGES:
+            continue  # background: leave at 0
+        mask = label == cls_val
+        n = int(mask.sum())
+        if n == 0:
+            continue
+
+        k1_vals = K1_map[mask]
+        # rank -> uniform -> standard normal (avoiding exact 0/1 which
+        # would map to +-inf)
+        ranks = rankdata(k1_vals) / (n + 1)
+        z_k1 = norm.ppf(ranks)
+
+        z_indep = rng.normal(size=n)
+        z_adc = rho * z_k1 + np.sqrt(max(1 - rho ** 2, 0.0)) * z_indep
+
+        mean, std = ADC_TARGET_RANGES[cls_name]
+        adc_vals = mean + std * z_adc
+        adc_map[mask] = np.clip(adc_vals, 0.05, None)
+
+    return adc_map
 
 
 def sample_param_maps(label, params_dict, param_names, seed=None):

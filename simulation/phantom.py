@@ -10,7 +10,7 @@ Label convention:
 The phantom is a simple geometric stand-in (ellipsoid prostate, smaller
 ellipsoid lesion) -- it is not meant to be anatomically realistic, only to
 give three distinct, spatially contiguous tissue classes with known extent
-so that voxel-wise parameter-recovery methods (voxelwise NLLS / PINN / VAE)
+so that voxel-wise parameter-recovery methods (voxelwise NLLS / PINN)
 can be scored against a known ground truth.
 """
 from dataclasses import dataclass
