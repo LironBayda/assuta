@@ -5,7 +5,7 @@ import dce.analysis as dce
 import pet.analysis as pet
 
 
-def run_all(root_path, epochs=1000, device="cpu"):
+def run_all(root_path, epochs=1000, device=config.DEVICE):
     """
     FDA-style batch executor for DCE pipelines.
     Processes all subjects matching sub*/dce within the root directory.
