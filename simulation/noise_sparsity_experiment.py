@@ -85,14 +85,14 @@ def run_method(method, img, t, aif, num_of_compartment, epochs, mask):
         return maps["K1"], {}
 
     elif method == "tanh_pinn":
-        trainer = Trainer(c_p=aif, num_of_compartment=num_of_compartment, t=t, device="cpu",
+        trainer = Trainer(c_p=aif, num_of_compartment=num_of_compartment, t=t, device=config.DEVICE,
                            affine=np.eye(4), save_path=None, epochs=epochs, activation="tanh",
                            windowed=False)
         ks_out, hist = trainer.train(img, z_slices=[0])
         return ks_out[0], {"final_loss": hist["loss"][-1]}
 
     elif method == "sine_pinn":
-        trainer = Trainer(c_p=aif, num_of_compartment=num_of_compartment, t=t, device="cpu",
+        trainer = Trainer(c_p=aif, num_of_compartment=num_of_compartment, t=t, device=config.DEVICE,
                            affine=np.eye(4), save_path=None, epochs=epochs, activation="sine",
                            windowed=False)
         ks_out, hist = trainer.train(img, z_slices=[0])

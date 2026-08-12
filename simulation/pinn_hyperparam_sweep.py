@@ -167,7 +167,7 @@ def run_config(
             c_p=aif,
             num_of_compartment=1,
             t=t,
-            device="cpu",
+            device=config.DEVICE,
             affine=np.eye(4),
             save_path=str(save_path),
             epochs=EPOCHS,
