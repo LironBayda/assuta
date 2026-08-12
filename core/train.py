@@ -93,11 +93,11 @@ class Trainer:
         sgd_momentum: float = 0.9,
         use_lbfgs_schedule: bool = True,
         first_order_phase_epochs: int = 0,
-        lbfgs_phase_epochs: int = 10,
+        lbfgs_phase_epochs: int = PINN["epochs"]-1,
         lbfgs_max_iter: int =20 ,
         windowed: bool = True,
         axis: str = "xy",
-        window_size=64,
+        window_size=16,
         stride=None,
         slice_window: int = 1,
 
