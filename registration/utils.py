@@ -54,7 +54,6 @@ def _rigid_registration(moving: sitk.Image, reference: sitk.Image) -> sitk.Trans
     reg.SetInitialTransform(initial_rigid, inPlace=False)
 
     final_rigid = reg.Execute(reference, moving)
-    print("Rigid registration done.")
     return final_rigid
 
 
