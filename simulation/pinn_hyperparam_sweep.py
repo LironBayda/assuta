@@ -49,7 +49,7 @@ from core.train import Trainer
 # Experiment configuration
 # ---------------------------------------------------------------------------
 
-SHAPE = (64, 64, 8)
+SHAPE = (16, 16, 8)
 Z_IDX = [3, 4]
 
 FRAME_DURATION = 0.1522
@@ -267,7 +267,7 @@ def objective(trial: optuna.Trial) -> float:
     # These parameters were already present in the supplied script.
     kan_grid_size = trial.suggest_categorical(
         "kan_grid_size",
-        [3, 5, 6, 7, 8, 9, 10],
+        [3, 5],
     )
 
     kan_spline_order = trial.suggest_categorical(
@@ -277,7 +277,7 @@ def objective(trial: optuna.Trial) -> float:
 
     kan_grid_range = trial.suggest_categorical(
         "kan_grid_range",
-        [3, 5, 6, 7, 8, 9, 10],
+        [3, 5]
     )
 
     score = run_config(

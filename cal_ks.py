@@ -18,7 +18,7 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
         glob.glob(os.path.join(root_path, "sub*"))
     )
 
-    for idx, sub_path in enumerate(subject_paths[:33], start=1):
+    for idx, sub_path in enumerate(subject_paths[:7], start=1):
 
         subject_id = os.path.basename(sub_path)
 
