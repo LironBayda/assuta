@@ -102,7 +102,7 @@ class Trainer:
         sgd_momentum: float = 0.9,
         windowed: bool = True,
         axis: str = "xy",
-        window_size=64,
+        window_size=16,
         stride=None,
         slice_window: int = 1,
 
