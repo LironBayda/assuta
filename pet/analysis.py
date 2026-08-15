@@ -110,7 +110,7 @@ def pipeline(
             device=device,
             affine=new_affine,
             save_path=path,
-            epochs=epochs,
+            epochs=epochs*10,
             activation=activation,
             windowed=windowed,
             axis=axis,

@@ -10,6 +10,7 @@ import torch
 import config
 from config import PINN
 from core.pinn import PhysicsInformedNN
+from core.batched_windowed import fit_windows_batched, extract_ks_maps
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +45,16 @@ class Trainer:
         in the sweep -- K1 correlation 0.90->0.94, and k2's correlation
         flips sign from negative to positive.
       - Pure AdamW for the full epoch count beat every two-phase
-        Adam+L-BFGS schedule tried -- see use_lbfgs_schedule below,
-        which keeps that as the default and makes any other schedule
-        opt-in.
+        Adam+L-BFGS schedule tried, and is now the ONLY training path --
+        the L-BFGS schedule option (use_lbfgs_schedule and its associated
+        phase-length params) was removed entirely rather than kept as an
+        opt-in, since it was never the tuned recipe's actual winner and
+        its removal is also what makes the batched multi-window training
+        path (core/batched_windowed.py) always available -- a shared
+        L-BFGS line search across independent windows would have been a
+        different, unvalidated algorithm, so as long as it existed it had
+        to gate the batched path off. See git history for the old
+        two-phase implementation if it's ever needed again.
       - NOT yet verified for 2TCM/PET -- the Ve/kep bug this recipe was
         built around was 1TCM-only. Override explicitly for 2TCM until
         it gets its own sweep.
@@ -61,8 +69,8 @@ class Trainer:
     than KANLinear's own (-1,1) because self.t is z-score-normalized and
     routinely lands outside that range for non-uniform time sampling.
 
-    optimizer/use_lbfgs_schedule: opt-in experiments, not part of the
-    tuned recipe -- see their own docstrings below.
+    optimizer: "adamw" (tuned default) or "sgd" (untested) -- see its own
+    docstring below. Not part of the tuned recipe itself.
     """
 
     def __init__(
@@ -92,10 +100,6 @@ class Trainer:
         reg_weight: float = 0.0032193269572574016,
         optimizer: str = "adamw",
         sgd_momentum: float = 0.9,
-        use_lbfgs_schedule: bool = True,
-        first_order_phase_epochs: int = PINN["epochs"]-1,
-        lbfgs_phase_epochs: int = 1,
-        lbfgs_max_iter: int =20 ,
         windowed: bool = True,
         axis: str = "xy",
         window_size=64,
@@ -108,19 +112,11 @@ class Trainer:
         """
         optimizer : "adamw" (tuned default) or "sgd" (untested -- lets
             you check whether plain SGD converges at all on this loss;
-            not expected to beat AdamW). Only affects the first-order
-            phase(s); L-BFGS is unaffected.
+            not expected to beat AdamW). This is now the ONLY optimizer
+            for the full `epochs` count -- the L-BFGS two-phase schedule
+            was removed entirely (it never beat pure AdamW in the sweep;
+            see the class docstring).
         sgd_momentum : only used when optimizer="sgd".
-        use_lbfgs_schedule : if True, alternates first_order_phase_epochs
-            of the first-order optimizer with lbfgs_phase_epochs of
-            L-BFGS, cycling until `epochs` total steps are used. If False
-            (default): the first-order optimizer alone for the full
-            `epochs` count -- the setting that already won the sweep.
-            grad_clip is applied during first-order phases only (L-BFGS's
-            line search doesn't compose cleanly with manual clipping).
-        first_order_phase_epochs, lbfgs_phase_epochs, lbfgs_max_iter :
-            phase lengths (only used when use_lbfgs_schedule=True) and
-            L-BFGS's own internal line-search iterations per .step().
         windowed : bool, default True -- see `train()`'s docstring.
         axis : "xy" (default), "z", or "xyz" -- only used when
             windowed=True. See `_train_windowed`'s docstring.
@@ -174,10 +170,6 @@ class Trainer:
         self.physics_weight_start = physics_weight_start
         self.optimizer_name = optimizer
         self.sgd_momentum = sgd_momentum
-        self.use_lbfgs_schedule = use_lbfgs_schedule
-        self.first_order_phase_epochs = first_order_phase_epochs
-        self.lbfgs_phase_epochs = lbfgs_phase_epochs
-        self.lbfgs_max_iter = lbfgs_max_iter
         self.windowed = windowed
         self.axis = axis
         self.window_size = window_size
@@ -263,12 +255,21 @@ class Trainer:
         comp_str = "  ".join(f"{k}={v.item():.4f}" for k, v in components.items()) if components else ""
         logger.info(f"[{phase}] Epoch {epoch_counter + 1}/{self.epochs} - Loss: {loss.item():.6f}  {comp_str}")
 
-    def _run_first_order_phase(self, params, f_x_params, ks_params, n_steps, epoch_counter, z):
-        """Up to n_steps first-order optimizer steps. Returns (epoch_counter, stopped_early)."""
+    def _run_optimization(self, params, f_x_params, ks_params, z):
+        """Runs the first-order optimizer (AdamW/SGD per self.optimizer_name)
+        for the full `epochs` count. (Previously this could alternate with
+        an L-BFGS phase via use_lbfgs_schedule; that option was removed --
+        pure first-order training for the full budget was already the
+        setting that won the tuned-recipe sweep, and removing the L-BFGS
+        branch is also what makes the batched multi-window training path
+        (core/batched_windowed.py) unconditionally available -- a shared
+        L-BFGS line search across independent windows would have been a
+        different, unvalidated algorithm.)
+
+        Returns (epoch_counter, stopped_early)."""
         optimizer = self._build_first_order_optimizer(params)
-        for _ in range(n_steps):
-            if epoch_counter >= self.epochs:
-                break
+        epoch_counter = 0
+        for _ in range(self.epochs):
             self._anneal(epoch_counter)
             optimizer.zero_grad()
             loss = self.train_step()
@@ -289,56 +290,6 @@ class Trainer:
             self._log_step(self.optimizer_name, epoch_counter, loss)
             epoch_counter += 1
         return epoch_counter, False
-
-    def _run_lbfgs_phase(self, params, n_steps, epoch_counter, z):
-        """Up to n_steps L-BFGS .step() calls. grad_clip is NOT applied
-        here (doesn't compose with L-BFGS's line search)."""
-        optimizer = torch.optim.LBFGS(params, lr=1.0, max_iter=self.lbfgs_max_iter, line_search_fn="strong_wolfe")
-        for _ in range(n_steps):
-            if epoch_counter >= self.epochs:
-                break
-            self._anneal(epoch_counter)
-            stopped = {"value": False}
-
-            def closure():
-                optimizer.zero_grad()
-                loss = self.train_step()
-                if not torch.isfinite(loss):
-                    stopped["value"] = True
-                    return loss
-                loss.backward()
-                return loss
-
-            loss = optimizer.step(closure)
-            if stopped["value"] or not torch.isfinite(loss):
-                logger.error(f"Non-finite loss ({loss.item()}) at epoch {epoch_counter + 1}, z={z}; stopping this slice.")
-                return epoch_counter, True
-
-            self._log_step("lbfgs", epoch_counter, loss)
-            epoch_counter += 1
-        return epoch_counter, False
-
-    def _run_optimization(self, params, f_x_params, ks_params, z):
-        """Default: first-order optimizer alone for the full epoch count
-        (the setting that won the sweep). If use_lbfgs_schedule=True:
-        alternates first_order_phase_epochs / lbfgs_phase_epochs until
-        `epochs` is used."""
-        if not self.use_lbfgs_schedule:
-            return self._run_first_order_phase(params, f_x_params, ks_params, self.epochs, 0, z)
-
-        epoch_counter, stopped = 0, False
-        while epoch_counter < self.epochs and not stopped:
-            remaining = self.epochs - epoch_counter
-            epoch_counter, stopped = self._run_first_order_phase(
-                params, f_x_params, ks_params, min(self.first_order_phase_epochs, remaining), epoch_counter, z,
-            )
-            if stopped or epoch_counter >= self.epochs:
-                break
-            remaining = self.epochs - epoch_counter
-            epoch_counter, stopped = self._run_lbfgs_phase(
-                params, min(self.lbfgs_phase_epochs, remaining), epoch_counter, z,
-            )
-        return epoch_counter, stopped
 
     # ---------------------------
     # Run training
@@ -445,13 +396,113 @@ class Trainer:
             kan_grid_range=self.kan_grid_range, physics_weight=self.physics_weight,
             tac_consistency_weight=self.tac_consistency_weight, reg_weight=self.reg_weight,
             optimizer=self.optimizer_name, sgd_momentum=self.sgd_momentum,
-            use_lbfgs_schedule=self.use_lbfgs_schedule,
-            first_order_phase_epochs=self.first_order_phase_epochs,
-            lbfgs_phase_epochs=self.lbfgs_phase_epochs, lbfgs_max_iter=self.lbfgs_max_iter,
             windowed=False,
         )
         mean, _ = sub_trainer._train_whole(window_img, z_slices=[0])
         return mean
+
+    # ---------------------------
+    # Batched windowed training (axis="xy" fast path)
+    # ---------------------------
+    def _can_batch_xy(self, coords):
+        """
+        coords : list of (x0, x1, y0, y1) window bounds, already computed by
+            _train_windowed's axis="xy" branch (post edge-sliver skip).
+
+        The batched fast path (torch.func.vmap over all windows at once --
+        see core/batched_windowed.py) requires every window to have the
+        SAME voxel count, since it stacks all windows' TAC targets into one
+        (N, T, n_voxels) tensor. True whenever X, Y divide evenly by the
+        stride/window_size (e.g. this repo's 64x64 image with
+        window_size=16, stride=16 -> exactly 16 uniform 16x16 windows) --
+        false if edge slivers produced any odd-sized window.
+
+        Requires optimizer="adamw": the validated batched path (see
+        core/batched_windowed.py) has only been checked equivalent to the
+        sequential per-window loop for AdamW. (This gate previously also
+        checked use_lbfgs_schedule=False -- that option was removed from
+        Trainer entirely, since it never beat pure AdamW in the tuned-recipe
+        sweep and its presence was the only thing that could gate this
+        batched path off; a shared L-BFGS line search across independent
+        windows would have been a different, unvalidated algorithm.)
+        """
+        if self.optimizer_name != "adamw":
+            logger.info(
+                f"Batched windowed training not used: optimizer={self.optimizer_name!r} "
+                "(only 'adamw' is validated for the batched path). Falling "
+                "back to the sequential per-window loop."
+            )
+            return False
+        voxel_counts = {(x1 - x0) * (y1 - y0) for (x0, x1, y0, y1) in coords}
+        if len(voxel_counts) != 1:
+            logger.info(
+                f"Batched windowed training not used: windows have "
+                f"non-uniform voxel counts ({sorted(voxel_counts)}), likely "
+                "from an edge sliver under the current X/Y, window_size, "
+                "stride combination. Falling back to the sequential "
+                "per-window loop."
+            )
+            return False
+        return True
+
+    def _fit_windows_batched_xy(self, images, coords):
+        """
+        Batched replacement for calling _fit_window once per (x0,x1,y0,y1)
+        in `coords` -- trains all len(coords) window-PINNs in a single
+        AdamW loop via core/batched_windowed.py, then returns a list of
+        per-window Ks maps in the SAME order as `coords`, matching
+        _fit_window's per-call return shape so the caller's existing
+        accumulate-and-average stitching logic is unchanged.
+        """
+        n_windows = len(coords)
+        x0_, x1_, y0_, y1_ = coords[0]
+        wx, wy = x1_ - x0_, y1_ - y0_
+        Z = images.shape[3]
+        n_voxels_per_window = wx * wy * Z
+
+        def build_one_pinn():
+            return PhysicsInformedNN(
+                self.num_of_compartment, self.dt, (wx, wy, Z, images.shape[0]),
+                device=self.device, hidden_size=self.hidden_size,
+                bottleneck_size=self.bottleneck_size, omega_0=self.omega_0,
+                activation=self.activation, arch=self.arch,
+                kan_grid_size=self.kan_grid_size, kan_spline_order=self.kan_spline_order,
+                kan_grid_range=self.kan_grid_range, physics_weight=self.physics_weight,
+                tac_consistency_weight=self.tac_consistency_weight, reg_weight=self.reg_weight,
+            )
+
+        tacs_list = []
+        for (x0, x1, y0, y1) in coords:
+            window_img = images[:, x0:x1, y0:y1, :]
+            tacs, _ = self.prepare_tacs(window_img)  # (T, n_voxels)
+            tacs_list.append(torch.tensor(np.asarray(tacs) / self.num, dtype=torch.float32, device=self.device))
+        tacs_tensor_stacked = torch.stack(tacs_list, dim=0)  # (N, T, n_voxels)
+
+        trunk_stacked, ks_stacked, batch_history = fit_windows_batched(
+            pinn_builder=build_one_pinn,
+            n_windows=n_windows,
+            arch=self.arch,
+            num_of_compartment=self.num_of_compartment,
+            n_voxels_per_window=n_voxels_per_window,
+            t_norm=self.t.view(-1, 1),
+            sigma_t=self.sigma_t,
+            c_p_tensor=self.c_p_tensor,
+            tacs_tensor_stacked=tacs_tensor_stacked,
+            epochs=self.epochs,
+            lr=self.lr,
+            grad_clip=self.grad_clip,
+            causality_eps_final=self.causality_eps_final,
+            physics_weight_start=self.physics_weight_start,
+            physics_weight_target=self.physics_weight,
+        )
+        self.history = batch_history
+
+        Ks_all = extract_ks_maps(ks_stacked, self.num_of_compartment)  # (N, C+1, n_voxels)
+        Ks_all_np = Ks_all.cpu().numpy()
+        results = []
+        for i in range(n_windows):
+            results.append(Ks_all_np[i].reshape((self.num_of_compartment + 1), wx, wy, Z))
+        return results
 
     def _train_windowed(self, images):
         """
@@ -505,16 +556,27 @@ class Trainer:
             stride = self.stride if self.stride is not None else (wx, wy)
             sx, sy = stride if isinstance(stride, tuple) else (stride, stride)
 
+            coords = []
             for x0 in range(0, X, sx):
                 for y0 in range(0, Y, sy):
                     x1, y1 = min(x0 + wx, X), min(y0 + wy, Y)
                     if x1 - x0 < 2 or y1 - y0 < 2:
                         continue  # skip degenerate slivers at the edge
+                    coords.append((x0, x1, y0, y1))
+            n_windows = len(coords)
+
+            if self._can_batch_xy(coords):
+                logger.info(f"Batched windowed training: {n_windows} windows, single AdamW pass.")
+                window_results = self._fit_windows_batched_xy(images, coords)
+            else:
+                window_results = []
+                for (x0, x1, y0, y1) in coords:
                     window_img = images[:, x0:x1, y0:y1, :]
-                    n_windows += 1
-                    mean = self._fit_window(window_img)
-                    K_mean_full[:, x0:x1, y0:y1, :] += mean
-                    weight_full[x0:x1, y0:y1, :] += 1
+                    window_results.append(self._fit_window(window_img))
+
+            for (x0, x1, y0, y1), mean in zip(coords, window_results):
+                K_mean_full[:, x0:x1, y0:y1, :] += mean
+                weight_full[x0:x1, y0:y1, :] += 1
 
         elif self.axis == "z":
             for z0 in range(0, Z, self.slice_window):

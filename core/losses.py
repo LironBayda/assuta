@@ -109,7 +109,14 @@ class PINNLoss(nn.Module):
         return torch.sum(x ** 2)
 
     def _negative_penalty(self, x):
-        return torch.sum(x[x < 0] ** 2)
+        # Rewritten from boolean-mask fancy indexing (`x[x < 0] ** 2`) to
+        # `torch.clamp(x, max=0) ** 2`: mathematically identical element-for-
+        # element (clamp zeroes the x>=0 entries instead of dropping them,
+        # same sum either way) but has a STATIC output shape, which
+        # boolean-mask indexing does not -- required for this loss to be
+        # usable under torch.func.vmap (batched multi-window training),
+        # which explicitly refuses to batch dynamic-shape indexing ops.
+        return torch.sum(torch.clamp(x, max=0) ** 2)
 
     def _per_time_squared_error(self, output, target):
         """Squared error summed over all dims except the leading time dim,

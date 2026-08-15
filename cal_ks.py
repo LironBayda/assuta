@@ -18,7 +18,7 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
         glob.glob(os.path.join(root_path, "sub*"))
     )
 
-    for idx, sub_path in enumerate(subject_paths[:70], start=1):
+    for idx, sub_path in enumerate(subject_paths[:14], start=1):
 
         subject_id = os.path.basename(sub_path)
 
@@ -35,12 +35,12 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
 
         rpcancer_dixon = os.path.join(
             dce_path,
-            'rcancer_dixon.nii'
+            'cancer.nii'
         )
 
         rpnotcancer_dixon = os.path.join(
             dce_path,
-            'rnotcancer_dixon.nii'
+            'ref.nii'
         )
 
 
@@ -49,12 +49,12 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
 
         pet_rpcancer_dixon = os.path.join(
             dce_path,
-            'rcancer_dixon.nii'
+            'cancer.nii'
         )
 
         pet_rpnotcancer_dixon = os.path.join(
             dce_path,
-            'rnotcancer_dixon.nii'
+            'ref.nii'
         )
 
 
@@ -76,13 +76,13 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
         cy = pet_mask_c.shape[1] // 3
         cz = pet_mask_c.shape[2] // 3
 
-        pet_mask_c=pet_mask_c[cx: -cx, cy: -cy,:]
-        pet_mask_nc=pet_mask_nc[cx: -cx, cy: -cy,:]
+        pet_mask_c=pet_mask_c#[cx: -cx, cy: -cy,:]
+        pet_mask_nc=pet_mask_nc#[cx: -cx, cy: -cy,:]
 
         cxd = mask_c.shape[0] // 3
         cyd = mask_c.shape[1] // 3
-        mask_c=mask_c[cxd: -cxd, cyd: -cyd,:]
-        mask_nc=mask_nc[cxd: -cxd, cyd: -cyd,:]
+        mask_c=mask_c#[cxd: -cxd, cyd: -cyd,:]
+        mask_nc=mask_nc#[cxd: -cxd, cyd: -cyd,:]
 
 
         data[subject_id] = {

@@ -64,7 +64,7 @@ PINN = {
     # session to still be improving at 2000 epochs on a 1TCM/DCE
     # simulation. 1000 is a middle-ground default, not a confirmed
     # convergence point -- increase if you can afford the runtime.
-    "epochs": 1000,
+    "epochs": 200,
     "learning_rate": 0.001,
     "num_batches": 1,
     "dt": 0.152244
