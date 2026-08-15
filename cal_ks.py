@@ -18,7 +18,7 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
         glob.glob(os.path.join(root_path, "sub*"))
     )
 
-    for idx, sub_path in enumerate(subject_paths[:7], start=1):
+    for idx, sub_path in enumerate(subject_paths[:70], start=1):
 
         subject_id = os.path.basename(sub_path)
 
@@ -35,12 +35,12 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
 
         rpcancer_dixon = os.path.join(
             dce_path,
-            'rpcancer_dixon.nii'
+            'rcancer_dixon.nii'
         )
 
         rpnotcancer_dixon = os.path.join(
             dce_path,
-            'rpnotcancer_dixon.nii'
+            'rnotcancer_dixon.nii'
         )
 
 
@@ -49,12 +49,12 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
 
         pet_rpcancer_dixon = os.path.join(
             dce_path,
-            'rpcancer_dixon.nii'
+            'rcancer_dixon.nii'
         )
 
         pet_rpnotcancer_dixon = os.path.join(
             dce_path,
-            'rpnotcancer_dixon.nii'
+            'rnotcancer_dixon.nii'
         )
 
 
@@ -106,16 +106,16 @@ def run_all(root_path, epochs=1000, device="cpu", agg="median"):
             #   PET_K[:, :, :, 2][pet_mask_c[cx:-cx, cy:-cy, :] > 0].mean(),
 
             'not_cancer_Ktrans':
-                agg_fn(DCE_K1[:, :, :][mask_nc > 0]),
+                agg_fn(DCE_K1[:, :, :,0][mask_nc > 0]),
 
             'cancer_Ktrans':
-                agg_fn(DCE_K1[:, :, :][mask_c > 0]),
+                agg_fn(DCE_K1[:, :, :,0][mask_c > 0]),
 
             'not_cancer_Kkep':
-                agg_fn(DCE_K1[:, :, :][mask_nc > 0]),
+                agg_fn(DCE_K1[:, :, :,1][mask_nc > 0]),
 
             'cancer_Kkep':
-                agg_fn(DCE_K1[:, :, :][mask_c> 0])
+                agg_fn(DCE_K1[:, :, :,1][mask_c> 0])
 
         }
 

@@ -87,7 +87,7 @@ import optuna
 import torch
 from optuna.samplers import TPESampler
 from scipy.stats import pearsonr
-
+import config
 # ---------------------------------------------------------------------------
 # Project imports
 # ---------------------------------------------------------------------------
@@ -124,8 +124,8 @@ NOISE_STD = 0.1
 # multi-seed confirmation pass. This is the second-biggest speed lever after
 # caching build_case() -- tune EPOCHS_SEARCH down further if TPE still
 # ranks configs sensibly with less training.
-EPOCHS_SEARCH = 40
-EPOCHS_CONFIRM = 100
+EPOCHS_SEARCH = 250
+EPOCHS_CONFIRM = 250
 
 # Target ground-truth Pearson correlation between DCE-K1 and PET-K1 maps.
 TARGET_K1_CORR = 0.9
@@ -406,11 +406,11 @@ def objective(trial: optuna.Trial) -> float:
     lr = trial.suggest_float("lr", 1e-4, 1, log=True)
 
     kan_grid_size = trial.suggest_categorical(
-        "kan_grid_size", [3, 5]
+        "kan_grid_size", [3, 5,6,7,8,9]
     )
     kan_spline_order = trial.suggest_categorical("kan_spline_order", [1, 2, 3])
     kan_grid_range = trial.suggest_categorical(
-        "kan_grid_range", [3, 5]
+        "kan_grid_range", [3, 5,6,7,8,9]
     )
 
     result = run_config(

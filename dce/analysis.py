@@ -227,7 +227,6 @@ def pipeline(
             save_path=path,
             epochs=epochs,
             activation=activation,
-            arch=arch,
             windowed=windowed,
             axis=axis,
             stride=stride,

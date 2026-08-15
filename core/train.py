@@ -7,6 +7,7 @@ import numpy as np
 import nibabel as nib
 import torch
 
+import config
 from config import PINN
 from core.pinn import PhysicsInformedNN
 
@@ -73,31 +74,31 @@ class Trainer:
         affine=None,
         save_path=None,
         epochs=PINN["epochs"],
-        lr=0.043431928291308805,#PINN["learning_rate"],
-        grad_clip: Optional[float] = 0.1,
-        causality_eps_final: float = 1000,
+        lr=0.004742704122190852,#PINN["learning_rate"],
+        grad_clip: Optional[float] = 1.0,
+        causality_eps_final: float = 2000,
         physics_weight_start: Optional[float] = 0.0001,
-        hidden_size: int = 100,
+        hidden_size: int = 20,
         bottleneck_size: Optional[int] = None,
-        omega_0: float = 0.1595269002697269,
+        omega_0: float = 12.952902480661098,
         activation: str = "sine",
-        arch: str = "mlp",
+        arch: str = "kan",
 
         kan_grid_size: int = 3,
-        kan_spline_order: int = 1,
-        kan_grid_range=(-3.0, 1.0),
-        physics_weight: float = 0.028952212937853314,
-        tac_consistency_weight: Optional[float] =0.24095114278078722,
-        reg_weight: float = 0.0008221670354318431,
+        kan_spline_order: int = 2,
+        kan_grid_range=(-5.0, 5.0),
+        physics_weight: float = 0.07705417828450083,
+        tac_consistency_weight: Optional[float] =8.824941310985663,
+        reg_weight: float = 0.0032193269572574016,
         optimizer: str = "adamw",
         sgd_momentum: float = 0.9,
         use_lbfgs_schedule: bool = True,
-        first_order_phase_epochs: int = 0,
-        lbfgs_phase_epochs: int = PINN["epochs"]-1,
+        first_order_phase_epochs: int = PINN["epochs"]-1,
+        lbfgs_phase_epochs: int = 1,
         lbfgs_max_iter: int =20 ,
         windowed: bool = True,
         axis: str = "xy",
-        window_size=16,
+        window_size=64,
         stride=None,
         slice_window: int = 1,
 
