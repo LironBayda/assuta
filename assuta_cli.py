@@ -142,7 +142,7 @@ def run_real_data(args):
 def run_batch(args):
     """
     Batch-process a whole folder of subjects: root/sub*/dce and/or
-    root/sub*/pet, using the existing run_all_dce (dce.analysis) /
+`    root/sub*/pet, using the existing run_all_dce (dce.analysis) /
     run_all_pet (pet.analysis) batch executors -- these already implement
     exactly this folder-structure convention (glob root/sub*, skip any
     subject missing the relevant modality subfolder).

@@ -7,7 +7,7 @@ import torch
 from torch import nn
 
 from io_utils.nifti_utils import load_image_series
-
+import nibabel as nib
 
 def get_tac_from_masked_region(
         c_dyn: np.ndarray,
@@ -31,28 +31,53 @@ def get_tac_from_masked_region(
 
     return tac
 
-
-def init_network_xavier(net):
+def center_crop_nifti(data, affine, target_shape=(64, 64, 20)):
     """
-    Apply Xavier initialization to all weights in the network.
-    - GRU weight_ih and weight_hh → Xavier
-    - Linear layers → Xavier
-    - All biases → zeros
-    """
-    for m in net.modules():
-        if isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight)
-            if m.bias is not None:
-                nn.init.zeros_(m.bias)
-        elif isinstance(m, nn.GRU):
-            for name, param in m.named_parameters():
-                if 'weight_ih' in name:
-                    nn.init.xavier_uniform_(param.data)
-                elif 'weight_hh' in name:
-                    nn.init.xavier_uniform_(param.data)
-                elif 'bias' in name:
-                    nn.init.zeros_(param.data)
+    Center-crop a NIfTI image and correctly update its affine.
 
+    Parameters
+    ----------
+    data : ndarray
+        Input image data.
+    affine : ndarray
+        Input image affine.
+    target_shape : tuple
+        Desired shape (X, Y, Z).
+
+    Returns
+    -------
+    (ndarray, ndarray)
+        Cropped data and corrected affine.
+    """
+
+    original_shape = np.array(data.shape[:3])
+    target_shape = np.array(target_shape)
+
+    if np.any(original_shape < target_shape):
+        raise ValueError(
+            f"Image shape {tuple(original_shape)} is smaller than "
+            f"target shape {tuple(target_shape)}"
+        )
+
+    # Calculate crop starting coordinates
+    start = (original_shape - target_shape) // 2
+    end = start + target_shape
+
+    # Crop
+    cropped = data[
+        start[0]:end[0],
+        start[1]:end[1],
+        start[2]:end[2]
+    ]
+
+    # Update translation.
+    # The new voxel (0,0,0) corresponds to the old voxel `start`.
+    new_origin = nib.affines.apply_affine(affine, start)
+
+    new_affine = affine.copy()
+    new_affine[:3, 3] = new_origin
+
+    return cropped, new_affine
 
 
 def find_files(base_path, pattern):

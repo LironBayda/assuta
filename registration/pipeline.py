@@ -24,6 +24,144 @@ def _reg_all_frame_to_reference(moving_img: sitk.Image, reference_last: sitk.Ima
     img_reg = sitk.JoinSeries(reg_frames)
     return img_reg
 
+import numpy as np
+import SimpleITK as sitk
+
+
+def mask_to_reference(
+    moving_path: str,
+    reference_path: str,
+    mask_path: str,
+    run_affine: bool = True,
+    run_bspline: bool = True
+) -> np.ndarray:
+    """
+    Register a mask from moving-image space to reference-image space.
+
+    Registration image:
+        Sum of moving frames 4, 5, 6, and 23.
+
+    Reference image:
+        Last frame of the reference image if it is 4D.
+
+    The final transform is applied to the mask using nearest-neighbor
+    interpolation.
+    """
+
+    # ---------------------------------------------------------
+    # 1. Read images
+    # ---------------------------------------------------------
+    moving_img = sitk.ReadImage(moving_path)
+    reference_img = sitk.ReadImage(reference_path)
+    mask_img = sitk.ReadImage(mask_path)
+
+    # ---------------------------------------------------------
+    # 2. Get the last reference frame
+    # ---------------------------------------------------------
+    if reference_img.GetDimension() == 4:
+        n_frames = reference_img.GetSize()[3]
+        reference_last = _extract_n_frame(
+            reference_img,
+            n_frames - 1
+        )
+    else:
+        reference_last = reference_img
+
+    reference_last = sitk.Cast(
+        reference_last,
+        sitk.sitkFloat32
+    )
+
+    # ---------------------------------------------------------
+    # 3. Create registration image from moving frames
+    # ---------------------------------------------------------
+    if moving_img.GetDimension() != 4:
+        raise ValueError(
+            "moving_img must be a 4D image because frames "
+            "4, 5, 6 and 23 are used."
+        )
+
+    n_moving_frames = moving_img.GetSize()[3]
+
+    required_frames = [4, 5, 6, 23]
+
+    if max(required_frames) >= n_moving_frames:
+        raise ValueError(
+            f"Moving image has only {n_moving_frames} frames, "
+            f"but frame 23 is required."
+        )
+
+    moving_last = (
+        _extract_n_frame(moving_img, 4)
+        + _extract_n_frame(moving_img, 5)
+        + _extract_n_frame(moving_img, 6)
+        + _extract_n_frame(moving_img, 23)
+    )
+
+    moving_last = sitk.Cast(
+        moving_last,
+        sitk.sitkFloat32
+    )
+
+    print("Moving registration image size:",
+          moving_last.GetSize())
+
+    print("Reference image size:",
+          reference_last.GetSize())
+
+    # ---------------------------------------------------------
+    # 4. Compute registration transform
+    # ---------------------------------------------------------
+    final_tx = _compute_transform(
+        moving_last,
+        reference_last,
+        run_affine,
+        run_bspline
+    )
+
+    # ---------------------------------------------------------
+    # 5. Apply transform to mask
+    # ---------------------------------------------------------
+    mask_img = sitk.Cast(
+        mask_img,
+        sitk.sitkInt32
+    )
+
+    # If the mask is 4D, this should normally be handled
+    # separately. For a 3D mask, Resample directly.
+    if mask_img.GetDimension() != 3:
+        raise ValueError(
+            "mask_img must be a 3D mask."
+        )
+
+    mask_registered = sitk.Resample(
+        mask_img,
+        reference_last,
+        final_tx,
+        sitk.sitkNearestNeighbor,
+        0,
+        mask_img.GetPixelID()
+    )
+
+    # ---------------------------------------------------------
+    # 6. Convert to NumPy
+    # ---------------------------------------------------------
+    mask_registered = sitk.GetArrayFromImage(
+        mask_registered
+    )
+
+    # SimpleITK returns:
+    #     (z, y, x)
+    #
+    # Convert to:
+    #     (x, y, z)
+    mask_registered = np.transpose(
+        mask_registered,
+        (2, 1, 0)
+    )
+
+    return mask_registered
+
 
 
 def moving_to_reference_full(moving_path: str, reference_path: str,
@@ -33,7 +171,7 @@ def moving_to_reference_full(moving_path: str, reference_path: str,
     reference_img = sitk.ReadImage(reference_path)
 
     n_frames = reference_img.GetSize()[3] if reference_img.GetDimension() == 4 else 1
-    reference_last = _extract_n_frame(reference_img, n_frames-1) if n_frames > 1 else reference_img
+    reference_last = _extract_n_frame(reference_img, 0) if n_frames > 1 else reference_img
     reference_last = sitk.Cast(reference_last, sitk.sitkFloat32)
 
     if moving_img.GetDimension() == 3:
@@ -47,7 +185,7 @@ def moving_to_reference_full(moving_path: str, reference_path: str,
             img_reg.CopyInformation(reference_img)
 
         else:
-            moving_last = _extract_n_frame(moving_img, moving_img.GetSize()[3] - 1)
+            moving_last =_extract_n_frame(moving_img, 4)+_extract_n_frame(moving_img, 5)+_extract_n_frame(moving_img, 6)+_extract_n_frame(moving_img, 23)
             print("moving_last.GetSize()")
 
             print(moving_last.GetSize())

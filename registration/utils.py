@@ -42,8 +42,8 @@ def _rigid_registration(moving: sitk.Image, reference: sitk.Image) -> sitk.Trans
     reg = sitk.ImageRegistrationMethod()
     reg.SetMetricAsMattesMutualInformation(32)
     reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.3)
-    reg.SetOptimizerAsRegularStepGradientDescent(learningRate=0.0001, minStep=1e-4,
+    reg.SetMetricSamplingPercentage(0.6)
+    reg.SetOptimizerAsRegularStepGradientDescent(learningRate=0.001, minStep=1e-4,
                                                  numberOfIterations=10, relaxationFactor=0.5)
     reg.SetOptimizerScalesFromPhysicalShift()
     reg.SetInterpolator(sitk.sitkLinear)
@@ -66,7 +66,7 @@ def _affine_registration(moving: sitk.Image, reference: sitk.Image, rigid_tx: si
     reg = sitk.ImageRegistrationMethod()
     reg.SetMetricAsMattesMutualInformation(32)
     reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.6)
+    reg.SetMetricSamplingPercentage(0.3)
     reg.SetInterpolator(sitk.sitkLinear)
     reg.SetOptimizerAsRegularStepGradientDescent(learningRate=0.0001, minStep=1e-4, numberOfIterations=10, relaxationFactor=0.5)
     reg.SetOptimizerScalesFromPhysicalShift()
@@ -83,7 +83,6 @@ def _affine_registration(moving: sitk.Image, reference: sitk.Image, rigid_tx: si
 
     reg.SetInitialTransform(affine_init, inPlace=False)
     affine_opt = reg.Execute(reference, moving_rigid)
-    print("Affine registration done.")
 
     composite = sitk.CompositeTransform(3)
     composite.AddTransform(rigid_tx)
@@ -100,12 +99,12 @@ def _bspline_registration(moving_affine: sitk.Image, reference: sitk.Image, affi
     img_spacing = reference.GetSpacing()
     mesh_size = [max(1, round((img_size[i] * img_spacing[i]) / grid_spacing[i])) for i in range(3)]
 
-    bspline_init = sitk.BSplineTransformInitializer(reference, mesh_size, order=1)
+    bspline_init = sitk.BSplineTransformInitializer(reference, mesh_size, order=3)
 
     reg = sitk.ImageRegistrationMethod()
     reg.SetMetricAsMattesMutualInformation(numberOfHistogramBins=4)
     reg.SetMetricSamplingStrategy(reg.RANDOM)
-    reg.SetMetricSamplingPercentage(0.1)
+    reg.SetMetricSamplingPercentage(0.4)
     reg.SetInterpolator(sitk.sitkLinear)
     reg.SetOptimizerAsLBFGSB(gradientConvergenceTolerance=1e-4, numberOfIterations=1)
     reg.SetShrinkFactorsPerLevel([4, 2, 1])

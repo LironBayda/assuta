@@ -9,6 +9,7 @@ assuta.egg-info/entry_points.txt
 assuta.egg-info/requires.txt
 assuta.egg-info/top_level.txt
 core/__init__.py
+core/batched_windowed.py
 core/create_blood_mask.py
 core/kan_layers.py
 core/losses.py
@@ -28,11 +29,13 @@ pet/preprocessing.py
 registration/__init__.py
 registration/pipeline.py
 registration/utils.py
+simulation/check_k1_correlation_artifact.py
 simulation/circle_phantom.py
 simulation/forward_models.py
 simulation/kinetics_literature.py
 simulation/noise_aif_benchmark.py
 simulation/noise_sparsity_experiment.py
+simulation/optuna_search_k1_correlation.py
 simulation/phantom.py
 simulation/pinn_hyperparam_sweep.py
 simulation/validate.py

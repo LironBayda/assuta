@@ -37,10 +37,10 @@ SPGR = {
 
 BLOOD_DICTIONARY = {
     "num_atoms": 3,         # Blood, Tissue, Background
-    "dt_seconds": 6.5,
-    "K1": 0.18,
-    "k2": 0.65,
-    "blood_threshold": 0.7
+    "dt_seconds":7.5,
+    "K1": 0.08,
+    "k2": 0.8,
+    "blood_threshold": 0.95
 }
 
 # ============================================================
@@ -64,7 +64,7 @@ PINN = {
     # session to still be improving at 2000 epochs on a 1TCM/DCE
     # simulation. 1000 is a middle-ground default, not a confirmed
     # convergence point -- increase if you can afford the runtime.
-    "epochs": 10,
+    "epochs": 600,
     "learning_rate": 0.001,
     "num_batches": 1,
     "dt": 0.152244
@@ -83,8 +83,12 @@ DCE = {
 
 PET = {
     "dt": np.asarray([10,20,30,40,50,60,90,120,150,180,210,240,270,300,330,360,410,460,510,560,610,660,960,1200]),
+    "frame_dt":       [ 0.16666667, 0.16666667, 0.16666667, 0.16666667, 0.16666667, 0.16666667, 0.5, 0.5, 0.5, 0.5,
+                          0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.83333333, 0.83333333, 0.83333333, 0.83333333
+            , 0.83333333, 0.83333333, 5., 4.],
     "num_point": 24,
-    "blood_num_frames":10
+    "blood_num_frames":10,
+    "SLICE": 11  #6
 
 }
 
